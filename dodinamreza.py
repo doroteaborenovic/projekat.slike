@@ -12,7 +12,6 @@ import numpy as np
 import warnings
 from sklearn.metrics import f1_score  
 
-# Ignorisanje sistemskih upozorenja radi čistijeg ispisa u konzoli
 warnings.filterwarnings('ignore')
 
 class RecursiveDenseMicroBlock(nn.Module):
@@ -72,11 +71,11 @@ class SpectralDecomposeBlock(nn.Module):
         # Visoka frekvencija je razlika originalnog signala i niske frekvencije
         high = x - low
         
-        # Obrada obe komponente kroz zasebne konvolucione slojeve
+        # obrada obe komponente kroz zasebne konvolucione slojeve
         low_feat = self.low_conv(low)
         high_feat = self.high_conv(high)
         
-        # Izračunavanje težinskih koeficijenata (skalara) preko "gate" mehanizma
+        # izračunavanje težinskih koeficijenata (skalara) preko "gate" mehanizma
         concat = torch.cat([low_feat, high_feat], dim=1)
         w = self.gate(concat)
         
@@ -204,13 +203,12 @@ class DamageAttentionModule(nn.Module):
         return refined, attn_map
 
 class DodinaMreza(nn.Module):
-    """
-    Glavna arhitektura neuronske mreže (DodinaMreza).
-    Paralelno obrađuje sliku kroz prostornu (Spatial) i spektralnu (Spectral) granu.
-    Karakteristike se razmenjuju preko CrossBridge-a, spajaju preko GatedFusion bloka,
-    propuštaju kroz modul pažnje i na kraju klasifikuju u klase (neoštećeno / oštećeno).
-    Takođe ima i pomoćni izlaz (aux_damage) za lokalizaciju anomalija.
-    """
+    #Glavna arhitektura neuronske mreže (DodinaMreza).
+    #paralelno se obrađuju slike kroz prostorne (Spatial) i spektralne (Spectral) domene
+    #karakteristike se razmenjuju preko CrossBridge-a tj tu kao kouniciraju, a spajaju preko GatedFusion bloka,
+    #propuštaju kroz modul pažnje i na kraju klasifikuju u klase (neoštećeno / oštećeno).
+    #Takođe ima i pomoćni izlaz (aux_damage) za lokalizaciju anomalija.
+
     def __init__(self, num_classes: int = 2, in_channels: int = 3):
         super().__init__()
 
@@ -254,7 +252,7 @@ class DodinaMreza(nn.Module):
             nn.Dropout(0.3),
             nn.Linear(128, num_classes),
         )
-        # Pomoćna glava za generisanje mape oštećenja
+        #generisanje mape oštećenja
         self.damage_map_head = nn.Sequential(
             nn.Conv2d(512, 64, 3, padding=1),
             nn.ReLU(inplace=True),
