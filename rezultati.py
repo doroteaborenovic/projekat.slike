@@ -221,7 +221,7 @@ class DodinaMreza(nn.Module):
         )
         self.spectral_block3 = SpectralDecomposeBlock(256)
 
-#cross conection  su zapravo mostovi izmdju moja dva toka mreže tj prostor i spektar
+        #cross conection  su zapravo mostovi izmdju moja dva toka mreže tj prostor i spektar
         self.cross1 = AsymmetricCrossBridge(64, 64, 64) #ovo je  za osnvoe ivice
         self.cross2 = AsymmetricCrossBridge(128, 128, 128) #ovo je za teksture i oblike
         self.cross3 = AsymmetricCrossBridge(256, 256, 256)#ovo je za kao neke teže delove
@@ -280,7 +280,6 @@ class DodinaMreza(nn.Module):
             'damage_map': damage_map,
             'aux_damage': aux_damage
         }
-
 
 
 class DamageDataset(Dataset):
@@ -365,8 +364,8 @@ def evaluiraj_dodinu_mrezu_sa_detaljnim_klasama(model_path: str, test_dataset_di
     all_labels = []
     all_paths = []
 
-#ošrećenja
-  damage_mapping = {
+    #ošrećenja
+    damage_mapping = {
         'apply_anisotropic_diffusion': 'Vlaga i gubitak detalja',
         'apply_mold_and_decay': 'Buđ i biološka degradacija',
         'apply_chemical_aging': 'Hemijsko starenje i žutilo',
@@ -374,6 +373,7 @@ def evaluiraj_dodinu_mrezu_sa_detaljnim_klasama(model_path: str, test_dataset_di
         'apply_cracks': 'Pukotine na platnu',
         'apply_water_stains': 'Vodene mrlje (Coffee-ring)',
         'apply_paint_flaking': 'Ljuštenje boje',
+        'apply_dust_and_scratches': 'Prašina i ogrebotine',
         'apply_combined_damage': 'Kombinovano oštećenje'
     }
 
@@ -381,7 +381,7 @@ def evaluiraj_dodinu_mrezu_sa_detaljnim_klasama(model_path: str, test_dataset_di
     stats['Bez oštećenja (Čiste slike)'] = {'total': 0, 'correct': 0}
 
     # Prolazak kroz dataset (ovde ide 3way tta gde se modelu 3 puta prikaze slika)  tj model vidi priginalnu sliku i 2 puta okrenututu)
-  #ukupna verovatnoca je srednja vrednost za ta tri da bi rezultat bio bolji jej
+    #ukupna verovatnoca je srednja vrednost za ta tri da bi rezultat bio bolji jej
     with torch.no_grad():
         for images, labels, paths in test_loader:
             images = images.to(device)
@@ -510,7 +510,7 @@ def evaluiraj_dodinu_mrezu_sa_detaljnim_klasama(model_path: str, test_dataset_di
     plt.xlabel('Predviđeno (Šta je model rekao)')
     plt.ylabel('Stvarno (Tačna oznaka)')
     plt.title('Matrica konfuzije (Dodina Mreža)')
-        cm_path = os.path.join(results_dir, "matrica_konfuzije.png")
+    cm_path = os.path.join(results_dir, "matrica_konfuzije.png")
     plt.savefig(cm_path, dpi=300, bbox_inches="tight")
     print(f"matrica konfuzije sačuvana na:\n{cm_path}\n")
     
@@ -520,7 +520,7 @@ def evaluiraj_dodinu_mrezu_sa_detaljnim_klasama(model_path: str, test_dataset_di
 
 # start
 if __name__ == '__main__':
-    putanja_do_modela = "/content/drive/MyDrive/Projekat_Model/dodinamreza_best.pth"
+    putanja_do_modela = "/content/drive/MyDrive/Projekat_Model/dodinamreza.pth"
     putanja_do_test_dataseta = "/content/DATASET_TEST"
 
     stvarne_oznake, predvidjanja = evaluiraj_dodinu_mrezu_sa_detaljnim_klasama(
