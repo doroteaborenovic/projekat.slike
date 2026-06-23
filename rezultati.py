@@ -1,5 +1,6 @@
 #metrike za prvu arhitekturu za kalsifikaciju
 #ređanje slika i klsifikacija po oštećenjima (na svaku sliku 6 oštećenja)
+#ovo je ya dodinu mre\u prvu koja ima vi[e epoha tj gde nije unapredjen deo ya spektar
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
