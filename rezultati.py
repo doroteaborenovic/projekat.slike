@@ -21,23 +21,20 @@ drive_test_zip = "/content/drive/MyDrive/Projekat_Model/DATASET_TEST.zip"
 lokalni_test_path = "/content/DATASET_TEST"
 
 if not os.path.exists(lokalni_test_path):
-    print("Priprema testnog skupa podataka na lokalnom disku Colab okruženja...")
+    print("Priprema")
     if os.path.exists(drive_test_zip):
-        print("Pronađen arhivirani testni skup podataka na Google Drive-u. Pokreće se raspakivanje...")
+        print("Pronađen arhivirani testni skup podataka na Google Drive-u")
         get_ipython().system(f'unzip -q "{drive_test_zip}" -d "/content/"')
-        print("Raspakivanje uspešno završeno.")
+        print("Raspakivanje završeno")
     else:
-        print("KRIZNA GREŠKA: DATASET_TEST.zip nije pronađen na navedenoj putanji na Google Drive-u.")
+        print(" DATASET_TEST.zip nije pronađen")
 else:
-    print("Testni skup podataka je već spreman u lokalnom direktorijumu /content/.")
+    print("Testni skup podataka je već spreman u /content/")
 
 
 #ovde je arhitektrua modela
 class RecursiveDenseMicroBlock(nn.Module):
-    """
-    Gusti mikro-blok sa rekurzivnim procesiranjem i rezidualnim vezama.
-    Ekstrahuje fine detalje kroz uzastopne konvolucije bez gubljenja prostornih informacija.
-    """
+    #blok koji više puta obrađuje istu sliku da bi izvukao sitne detalje.
     def __init__(self, channels: int, num_recursions: int = 3):
         super().__init__()
         self.num_recursions = num_recursions
@@ -56,11 +53,9 @@ class RecursiveDenseMicroBlock(nn.Module):
 
 
 class SpectralDecomposeBlock(nn.Module):
-    """
-    Blok za spektralnu dekompoziciju.
-    Razdvaja sliku na visoke i niske frekvencije, obrađuje ih zasebno,
-    i spaja ih pomoću gejtovanog mehanizma pažnje.
-    """
+    #za moj model ovo je jedna od najbitnijih delova
+    #ovaj deo razdvaja sliku na dve različite vrste infromacija
+        #prvo je na nsike frekv(glatke oblasti tipa svetlo) i visoke frekv (ivice šum tekstura)
     def __init__(self, channels: int):
         super().__init__()
         self.low_conv = nn.Sequential(
@@ -95,10 +90,8 @@ class SpectralDecomposeBlock(nn.Module):
 
 
 class SpatialBlock(nn.Module):
-    """
-    Prostorni blok koji kombinuje standardne konvolucione slojeve 
-    i RecursiveDenseMicroBlock radi efikasnog smanjenja rezolucije.
-    """
+#SpatialBlock obrađuje prostorne karakteristike slike
+#kombinujući osnovne konvolucione filtere, rekurzivnu obradu detalja i redukciju rezolucije radi efikasnijeg izdvajanja vizuelnih informacija.
     def __init__(self, in_ch: int, out_ch: int):
         super().__init__()
         self.conv = nn.Sequential(
@@ -106,8 +99,9 @@ class SpatialBlock(nn.Module):
             nn.BatchNorm2d(out_ch),
             nn.ReLU(inplace=True)
         )
-        self.dense_micro = RecursiveDenseMicroBlock(out_ch, num_recursions=3)
-        self.pool = nn.MaxPool2d(2)
+        self.dense_micro = RecursiveDenseMicroBlock(out_ch, num_recursions=3) #pojačava detalje tj prvo vidi osnovno, pa onda ide dublje u sliku
+        #tako se poboljšava preciznost detalja
+        self.pool = nn.MaxPool2d(2) #smanjuje rezolucije
 
     def forward(self, x: Tensor) -> tuple[Tensor, Tensor]:
         x = self.conv(x)
@@ -117,23 +111,21 @@ class SpatialBlock(nn.Module):
 
 
 class AsymmetricCrossBridge(nn.Module):
-    """
-    AsymmetricCrossBridge predstavlja komunikacioni most između prostornog
-    (Spatial) i frekvencijskog/spektralnog (Spectral) toka mreže.
-    """
+#ovde je kao komunikacija spektralnog i tog detaljnog dela
+#
     def __init__(self, spatial_ch: int, spectral_ch: int, out_ch: int):
         super().__init__()
         self.spatial_to_spectral = nn.Sequential(
-            nn.Conv2d(spatial_ch, spectral_ch, 1),
+            nn.Conv2d(spatial_ch, spectral_ch, 1), #pretvara prostorne informacije u format koji spectral može da razume
             nn.BatchNorm2d(spectral_ch),
             nn.ReLU(inplace=True)
         )
         self.spectral_to_spatial = nn.Sequential(
-            nn.Conv2d(spectral_ch, spatial_ch, 1),
+            nn.Conv2d(spectral_ch, spatial_ch, 1), 
             nn.BatchNorm2d(spatial_ch),
             nn.ReLU(inplace=True)
         )
-        self.fuse = nn.Conv2d(spatial_ch + spectral_ch, out_ch, 1)
+        self.fuse = nn.Conv2d(spatial_ch + spectral_ch, out_ch, 1) #uzima informacije iz oba dela i kombinuje ih u finalnu odluku
 
     def forward(self, spatial_feat: Tensor, spectral_feat: Tensor) -> Tensor:
         spectral_enhanced = spectral_feat + self.spatial_to_spectral(
@@ -151,13 +143,10 @@ class AsymmetricCrossBridge(nn.Module):
 
 
 class GatedFusionBlock(nn.Module):
-    """
-    Fuzioni blok sa mehanizmom učenja kapija (gates).
-    Dinamički balansira uticaj prostornih i spektralnih karakteristika.
-    """
+    #ovaj blok spaja prostorne ifnormacije i  spektralne informacije
     def __init__(self, spatial_ch: int, spectral_ch: int, out_ch: int):
         super().__init__()
-        self.spatial_proj = nn.Conv2d(spatial_ch, out_ch, 1)
+        self.spatial_proj = nn.Conv2d(spatial_ch, out_ch, 1) #pretvara spatial feature-e u isti prostor dimenzija
         self.spectral_proj = nn.Conv2d(spectral_ch, out_ch, 1)
         self.gate = nn.Sequential(
             nn.AdaptiveAvgPool2d(1),
@@ -166,7 +155,8 @@ class GatedFusionBlock(nn.Module):
             nn.ReLU(inplace=True),
             nn.Linear(out_ch // 4, out_ch * 2),
             nn.Sigmoid()
-        )
+        ) #ovde se gleda cela slika, globalno izračunava koliko je šta važno i daje težine (weights) 
+        #težine su brojevi koje model uči tokom treninga da bi odlučio koliko da veruje nekoj određenoj info
 
     def forward(self, spatial: Tensor, spectral: Tensor) -> Tensor:
         s = self.spatial_proj(spatial)
@@ -183,10 +173,9 @@ class GatedFusionBlock(nn.Module):
 
 
 class DamageAttentionModule(nn.Module):
-    """
-    Modul pažnje fokusiran na detekciju anomalija i oštećenja.
-    Generiše mapu pažnje koja naglašava patološke regije na slici.
-    """
+    #ovaj deo pornalazi delove slike koji liče na oštećenja i model uči gde treba d agleda kad locira oštećenja
+    #i generiše se mapa pažnje
+    #naglašavaju se rgije slike gde su potencijalna oštećenja
     def __init__(self, in_channels: int):
         super().__init__()
         self.attention = nn.Sequential(
@@ -210,18 +199,15 @@ class DamageAttentionModule(nn.Module):
 
 
 class DodinaMreza(nn.Module):
-    """
-    Glavna dvo-tokovna (Dual-Stream) arhitektura:
-    Kombinuje prostornu svesnost sa frekvencijskom analizom radi robusne detekcije oštećenja.
-    """
+    # mreža kombinuje prostornu svesnost sa frekvencijskom analizom
     def __init__(self, num_classes: int = 2, in_channels: int = 3):
         super().__init__()
-        # ---- PROSTORNI TOK (SPATIAL STREAM) ----
+        # prostor
         self.spatial_block1 = SpatialBlock(in_channels, 64)
         self.spatial_block2 = SpatialBlock(64, 128)
         self.spatial_block3 = SpatialBlock(128, 256)
 
-        # ---- SPEKTRALNI TOK (SPECTRAL STREAM) ----
+        # spektar
         self.spectral_init = nn.Conv2d(in_channels, 64, 3, padding=1)
         self.spectral_block1 = SpectralDecomposeBlock(64)
         self.spectral_pool1 = nn.MaxPool2d(2)
@@ -235,14 +221,14 @@ class DodinaMreza(nn.Module):
         )
         self.spectral_block3 = SpectralDecomposeBlock(256)
 
-        # ---- ASIMETRIČNO POVEZIVANJE (CROSS CONNECTIONS) ----
-        self.cross1 = AsymmetricCrossBridge(64, 64, 64)
-        self.cross2 = AsymmetricCrossBridge(128, 128, 128)
-        self.cross3 = AsymmetricCrossBridge(256, 256, 256)
+#cross conection  su zapravo mostovi izmdju moja dva toka mreže tj prostor i spektar
+        self.cross1 = AsymmetricCrossBridge(64, 64, 64) #ovo je  za osnvoe ivice
+        self.cross2 = AsymmetricCrossBridge(128, 128, 128) #ovo je za teksture i oblike
+        self.cross3 = AsymmetricCrossBridge(256, 256, 256)#ovo je za kao neke teže delove
 
-        # ---- FUZIJA I KLASIFIKACIJA ----
-        self.gated_fusion = GatedFusionBlock(256, 256, 512)
-        self.damage_attention = DamageAttentionModule(512)
+        # fuzija i klasifikacija
+        self.gated_fusion = GatedFusionBlock(256, 256, 512) #ovde je glavna odluka i bira model šta je važnija tj tačnije
+        self.damage_attention = DamageAttentionModule(512) #posledni  deo koji gleda šta je gde i šta je bitno i gde ide pažnja
 
         self.classifier = nn.Sequential(
             nn.AdaptiveAvgPool2d(1),
@@ -261,6 +247,9 @@ class DodinaMreza(nn.Module):
             nn.Conv2d(64, 1, 1),
             nn.Sigmoid()
         )
+#Cross connection blokovi omogućavaju razmenu informacija između prostornog i spektralnog toka na različitim nivoima dubine mreže
+#kroz gated fusion i attention modul se formira konačna reprezentacija i fokus na oštećene regione.
+
 
     def forward(self, x: Tensor) -> dict[str, Tensor]:
         s1, s1_skip = self.spatial_block1(x)
@@ -293,15 +282,9 @@ class DodinaMreza(nn.Module):
         }
 
 
-# ============================================================
-# 2. DATASET INICIJALIZACIJA (SAČUVANA PUTANJA)
-# ============================================================
 
 class DamageDataset(Dataset):
-    """
-    Dataset klasa za učitavanje slika sa podrškom za prosleđivanje putanje fajla,
-    što nam omogućava preciznu kategorizaciju oštećenja na osnovu imena fajla.
-    """
+    #priprema slika
     def __init__(self, dataset_dir: str, img_size: int = 128, train: bool = True):
         if train:
             self.transform = transforms.Compose([
@@ -340,17 +323,14 @@ class DamageDataset(Dataset):
 
 
 def evaluiraj_dodinu_mrezu_sa_detaljnim_klasama(model_path: str, test_dataset_dir: str, img_size: int = 128, batch_size: int = 32):
-    """
-    Učitava težine, primenjuje optimalni prag na bazi 3-way TTA,
-    i ispisuje visoko-profesionalnu tabelu. Rezultati se čuvaju na Drive-u.
-    """
+    #učitavaju se težine, primenjuje se optimalni prag; težine odredjuju koliko da se veruje nekoj info tj naučene olduke
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     print(f"{'='*60}")
     print(f"Evaluacija modela na uređaju: {device}")
     print(f"Testni dataset: {test_dataset_dir}")
     print(f"{'='*60}\n")
 
-    # Priprema test podataka
+    # priprema test podataka
     test_dataset = DamageDataset(test_dataset_dir, img_size=img_size, train=False)
 
     if len(test_dataset) == 0:
@@ -361,14 +341,14 @@ def evaluiraj_dodinu_mrezu_sa_detaljnim_klasama(model_path: str, test_dataset_di
     print(f"Pronađeno ukupno {len(test_dataset)} slika za testiranje.")
     model = DodinaMreza(num_classes=2).to(device)
 
-    # Učitavanje sačuvanih težina
+    # učitavanje sačuvanih težina
     if not os.path.exists(model_path):
-        print(f"❌ GREŠKA: Model nije pronađen na putanji: {model_path}")
+        print(f"Model nije pronađen na putanji: {model_path}")
         return None, None
 
     checkpoint = torch.load(model_path, map_location=device, weights_only=False)
     
-    # Preuzimanje sačuvanih težina i praga
+    # preuzimanje sačuvanih težina i optimalnog praga
     if 'model_state_dict' in checkpoint:
         model.load_state_dict(checkpoint['model_state_dict'])
         best_threshold = checkpoint.get('best_threshold', 0.5)
@@ -420,7 +400,7 @@ def evaluiraj_dodinu_mrezu_sa_detaljnim_klasama(model_path: str, test_dataset_di
             outputs_flipped_v = model(images_flipped_v)
             probs_flipped_v = F.softmax(outputs_flipped_v['logits'], dim=-1)
 
-            # Fuzija verovatnoća (3-way TTA)
+            # ovde je 3way tta dakle prethodna dva deljena sa 3
             probs_final = (probs_orig + probs_flipped_h + probs_flipped_v) / 3.0
 
             # Predikcija primenom optimalnog praga
@@ -433,7 +413,7 @@ def evaluiraj_dodinu_mrezu_sa_detaljnim_klasama(model_path: str, test_dataset_di
     all_preds = np.array(all_preds)
     all_labels = np.array(all_labels)
 
-    # Razvrstavanje tačnosti po klasama oštećenja
+    # razvrstavanje tačnosti po klasama oštećenja
     for pred, label, path in zip(all_preds, all_labels, all_paths):
         if label == 0:
             stats['Bez oštećenja (Čiste slike)']['total'] += 1
@@ -453,12 +433,10 @@ def evaluiraj_dodinu_mrezu_sa_detaljnim_klasama(model_path: str, test_dataset_di
     ukupna_tacnost = accuracy_score(all_labels, all_preds) * 100
 
     print("\n" + "="*50)
-    print(f"KONAČNI REZULTATI EVALUACIJE MODELA")
+    print(f"REZULTATI EVALUACIJE MODELA")
     print(f"Ukupna tačnost modela (Accuracy): {ukupna_tacnost:.2f}%")
     print("="*50 + "\n")
-
-    # Detaljan izveštaj po osnovnim klasama (0 i 1)
-    print("Detaljan izveštaj klasifikacije po klasama:")
+    print("Klasifikacija po klasama:")
     report = classification_report(
         all_labels,
         all_preds,
@@ -467,7 +445,6 @@ def evaluiraj_dodinu_mrezu_sa_detaljnim_klasama(model_path: str, test_dataset_di
     )
     print(report)
 
-    # Priprema podataka za tabelu
     rows = []
     for cat, data in stats.items():
         total = data['total']
@@ -489,7 +466,6 @@ def evaluiraj_dodinu_mrezu_sa_detaljnim_klasama(model_path: str, test_dataset_di
     print(f"{PINK}│{RESET} {BOLD}{'TIP OŠTEĆENJA / KATEGORIJA':<32} {PINK}│{RESET} {BOLD}{'TESTIRANO':<10} {PINK}│{RESET} {BOLD}{'TAČNO':<10} {PINK}│{RESET} {BOLD}{'TAČNOST (%)':<12} {PINK}│{RESET}")
     print(mid_border)
     
-    # Popunjavanje redova podacima (tekst je standardan, a vertikalni graničnici su roze)
     for row in rows:
         cat_name = row[0]
         tested = row[1]
@@ -499,24 +475,23 @@ def evaluiraj_dodinu_mrezu_sa_detaljnim_klasama(model_path: str, test_dataset_di
             
     print(bot_border)
 
-    # Definisanje i kreiranje izlaznog direktorijuma na drajvu
     results_dir = os.path.dirname(model_path)
     
     # čuvanje tabele skoja prikazuje tačnost modela na različitim oštećenjima kojih ima 8
     csv_path = os.path.join(results_dir, "rezultati_po_tipovima_ostecenja.csv")
     df_stats.to_csv(csv_path, index=False, encoding="utf-8-sig")
-    print(f"\nTabela rezultata uspešno je sačuvana na lokaciji:\n{csv_path}")
+    print(f"\nTabela rezultata uspešno:\n{csv_path}")
 
     report_path = os.path.join(results_dir, "classification_report.txt")
     with open(report_path, "w", encoding="utf-8") as f:
         f.write(report)
-    print(f"Izveštaj klasifikacije sačuvan na lokaciji:\n{report_path}")
+    print(f"klasifikacije :\n{report_path}")
 
-    # Izračunavanje i čuvanje osnovnih metrika
-    accuracy = accuracy_score(all_labels, all_preds)
-    precision = precision_score(all_labels, all_preds)
-    recall = recall_score(all_labels, all_preds)
-    f1 = f1_score(all_labels, all_preds)
+    # izračunavanje i čuvanje osnovnih metrika
+    accuracy = accuracy_score(all_labels, all_preds) #tačnost tj koliko je ukupno pogodio
+    precision = precision_score(all_labels, all_preds) #koliko su poz. predikcije tačen
+    recall = recall_score(all_labels, all_preds) #koliko je stvarnih oštećenja našao
+    f1 = f1_score(all_labels, all_preds) #balans između precision i recall
 
     metrics_path = os.path.join(results_dir, "osnovne_metrike.txt")
     with open(metrics_path, "w", encoding="utf-8") as f:
@@ -524,7 +499,7 @@ def evaluiraj_dodinu_mrezu_sa_detaljnim_klasama(model_path: str, test_dataset_di
         f.write(f"Precision: {precision:.4f}\n")
         f.write(f"Recall   : {recall:.4f}\n")
         f.write(f"f1-score : {f1:.4f}\n")
-    print(f"Osnovne skalarne metrike sačuvane na lokaciji:\n{metrics_path}")
+    print(f" metrike sačuvane u:\n{metrics_path}")
 
     # crtanje matrice konfuzije i onda njeno cuvanje da mogu da je gledam kasnije
     cm = confusion_matrix(all_labels, all_preds)
@@ -537,7 +512,7 @@ def evaluiraj_dodinu_mrezu_sa_detaljnim_klasama(model_path: str, test_dataset_di
     plt.title('Matrica konfuzije (Dodina Mreža)')
         cm_path = os.path.join(results_dir, "matrica_konfuzije.png")
     plt.savefig(cm_path, dpi=300, bbox_inches="tight")
-    print(f"Grafik matrice konfuzije uspešno sačuvan na lokaciji:\n{cm_path}\n")
+    print(f"matrica konfuzije sačuvana na:\n{cm_path}\n")
     
     plt.show()
 
