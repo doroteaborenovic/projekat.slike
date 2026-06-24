@@ -1,4 +1,5 @@
 #ovo je prva arhitektura za klasifikaciju da li je oštećenja slika ili ne
+#ovo je ona gde je uradjeno 142 epohe
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -134,9 +135,9 @@ class AsymmetricCrossBridge(nn.Module):
             F.interpolate(spectral_feat, size=spatial_feat.shape[2:],
                           mode='bilinear', align_corners=False)
         )
-        # Pronalaženje minimalnih dimenzija radi finalnog poravnanja pre spajanja
-        min_h = min(spatial_feat.shape, spectral_feat.shape)
-        min_w = min(spatial_feat.shape, spectral_feat.shape)
+        # POPRAVLJENO: Pravilno pronalaženje minimalnih dimenzija pre spajanja
+        min_h = min(spatial_feat.shape[2], spectral_feat.shape[2])
+        min_w = min(spatial_feat.shape[3], spectral_feat.shape[3])
         s_pooled = F.adaptive_avg_pool2d(spatial_enhanced, (min_h, min_w))
         sp_pooled = F.adaptive_avg_pool2d(spectral_enhanced, (min_h, min_w))
         return self.fuse(torch.cat([s_pooled, sp_pooled], dim=1))
@@ -168,9 +169,9 @@ class GatedFusionBlock(nn.Module):
         )
         # Spajanje i računanje pažnje (atention/gate koeficijenata) za oba ulaza
         combined = torch.cat([s, sp], dim=1)
-        gates = self.gate(combined).view(combined.shape, -1, 1, 1)
+        gates = self.gate(combined).view(combined.shape[0], -1, 1, 1)
         
-        out_ch = s.shape
+        out_ch = s.shape[1]
         s_gate = gates[:, :out_ch]   # Kapija za prostorne podatke
         sp_gate = gates[:, out_ch:]  # Kapija za spektralne podatke
         return s_gate * s + sp_gate * sp
@@ -366,8 +367,8 @@ class DamageDataset(Dataset):
             ])
 
         self.samples = []
-        # Učitavanje putanja i labela (0 ili 1) iz foldera
-        for label in:
+        # POPRAVLJENO: Ispravljena prazna lista klasa [0, 1]
+        for label in [0, 1]:
             folder = os.path.join(dataset_dir, str(label))
             if not os.path.exists(folder):
                 continue
@@ -387,7 +388,7 @@ class DamageDataset(Dataset):
 
 def train_dodina_mreza(
     dataset_dir: str,
-    epochs_to_train: int = 15,  
+    epochs_to_train: int = 30,  # Podešeno na 30 dodatnih epoha (nastavlja se trening)
     batch_size: int = 32,
     lr: float = 7e-5,          
     img_size: int = 128,
@@ -461,7 +462,8 @@ def train_dodina_mreza(
     start_epoch = 0
     best_val_acc = 0.0
     best_threshold = 0.5
-    checkpoint_path = os.path.join(save_dir, 'dodinamreza_best.pth')
+    # POPRAVLJENO: Učitava se stari model (dodina mreza.pth) sa Drive-a
+    checkpoint_path = os.path.join(save_dir, 'dodinamreza.pth')
 
     # Logika za nastavak treniranja ukoliko već postoji sačuvan checkpoint (.pth fajl)
     if resume and os.path.exists(checkpoint_path):
@@ -475,7 +477,7 @@ def train_dodina_mreza(
     scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=epochs_to_train)
 
     if resume and os.path.exists(checkpoint_path):
-        print(f"\Pronađen sačuvan model na putanji: {checkpoint_path}")
+        print(f"\nPronađen sačuvan model na putanji: {checkpoint_path}")
         model.load_state_dict(checkpoint['model_state_dict'])
         
         if 'optimizer_state_dict' in checkpoint:
@@ -547,13 +549,13 @@ def train_dodina_mreza(
                 # 1. Verovatnoća za originalnu sliku
                 probs_orig = F.softmax(outputs['logits'], dim=-1)
 
-                # 2. Verovatnoća za horizontalno okrenutu sliku
-                images_flipped_h = torch.flip(images, dims=)
+                # POPRAVLJENO: Dodata tačna horizontalna dimenzija
+                images_flipped_h = torch.flip(images, dims=[3])
                 outputs_flipped_h = model(images_flipped_h)
                 probs_flipped_h = F.softmax(outputs_flipped_h['logits'], dim=-1)
 
-                # 3. Verovatnoća za vertikalno okrenutu sliku
-                images_flipped_v = torch.flip(images, dims=)
+                # POPRAVLJENO: Dodata tačna vertikalna dimenzija
+                images_flipped_v = torch.flip(images, dims=[2])
                 outputs_flipped_v = model(images_flipped_v)
                 probs_flipped_v = F.softmax(outputs_flipped_v['logits'], dim=-1)
 
@@ -594,6 +596,7 @@ def train_dodina_mreza(
             best_val_acc = val_acc
             best_threshold = best_t_epoch
             os.makedirs(save_dir, exist_ok=True)
+            # Čuva se pod tvojim izabranim nazivom 'dodina mreza.pth'
             torch.save({
                 'epoch': epoch + 1,
                 'model_state_dict': model.state_dict(),
@@ -601,12 +604,21 @@ def train_dodina_mreza(
                 'scheduler_state_dict': scheduler.state_dict(),
                 'best_val_acc': best_val_acc,
                 'best_threshold': best_threshold, # Čuvanje praga koji je dao najbolji rezultat
-            }, os.path.join(save_dir, 'dodinamreza_best.pth'))
+            }, checkpoint_path)
             marker = f" ★ BEST (Optimalni T za F1 na {best_t_epoch:.2f} daje F1: {best_f1_epoch:.4f})"
         else:
+            # Čuvanje trenutne epohe (čak i ako nije apsolutni BEST) da ne izgubiš progres
+            torch.save({
+                'epoch': epoch + 1,
+                'model_state_dict': model.state_dict(),
+                'optimizer_state_dict': optimizer.state_dict(),
+                'scheduler_state_dict': scheduler.state_dict(),
+                'best_val_acc': best_val_acc,
+                'best_threshold': best_threshold,
+            }, checkpoint_path)
             marker = f" (Optimalni T za F1 na {best_t_epoch:.2f} daje F1: {best_f1_epoch:.4f})"
 
-        # Zapisivanje metrika u istoriju za kasniju analizu
+        # zapisivanje metrika u istoriju za kasniju analizu
         history['train_loss'].append(train_loss)
         history['train_acc'].append(train_acc)
         history['val_loss'].append(val_loss)
@@ -618,7 +630,7 @@ def train_dodina_mreza(
         print(f"Epoch {epoch+1:3d}/{total_epochs} | "
               f"Train Loss: {train_loss:.4f} / Acc: {train_acc:.1f}% | "
               f"Val Loss: {val_loss:.4f} / Acc: {val_acc:.1f}% (3-way TTA!) | "
-              f"LR: {scheduler.get_last_lr():.6f} | "
+              f"LR: {scheduler.get_last_lr()[0]:.6f} | "
               f"{elapsed:.1f}s{marker}")
 
     print(f"\n{'='*60}")
@@ -626,6 +638,7 @@ def train_dodina_mreza(
     print(f"{'='*60}")
 
     return model, history
+
 #ovo je sve za nameštanje google drive i putanje
 if __name__ == '__main__':
     drive_dataset_path = "/content/drive/MyDrive/Projekat_Model/DATASET_TRENING"
@@ -652,14 +665,14 @@ if __name__ == '__main__':
     else:
         print("dataset u lokalnom direktorijumu /content/.")
 
-#ovde je start
-        model, history = train_dodina_mreza(
+    # Pokretanje nastavka treninga modela
+    model, history = train_dodina_mreza(
         dataset_dir=local_dataset_path,
-        epochs_to_train=15, 
+        epochs_to_train=30, 
         batch_size=32,
         lr=7e-5,            
         img_size=128,
         val_split=0.2,
         save_dir="/content/drive/MyDrive/Projekat_Model",
-        resume=True,
+        resume=True, # Nastavlja od poslednje sačuvane epohe tvog starog modela
     )
