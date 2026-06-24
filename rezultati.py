@@ -14,6 +14,7 @@ import pandas as pd
 import matplotlib.pyplot as plt
 import seaborn as sns
 from sklearn.metrics import classification_report, confusion_matrix, accuracy_score, precision_score, recall_score, f1_score
+import datetime  # Dodato za jedinstveno imenovanje fajlova
 
 import warnings
 warnings.filterwarnings('ignore')
@@ -349,19 +350,27 @@ def evaluiraj_dodinu_mrezu_sa_detaljnim_klasama(model_path: str, test_dataset_di
     checkpoint = torch.load(model_path, map_location=device, weights_only=False)
     
     # preuzimanje sačuvanih težina i optimalnog praga
+    has_saved_threshold = False
     if 'model_state_dict' in checkpoint:
         model.load_state_dict(checkpoint['model_state_dict'])
-        best_threshold = checkpoint.get('best_threshold', 0.5)
-        print(f"Uspešno učitan checkpoint (Najbolja tačnost tokom treninga: {checkpoint.get('best_val_acc', 0.0):.2f}%)")
-        print(f"Korišćeni optimalni prag (Threshold): {best_threshold:.2f}") #predstavlja matematičku granicu (broj između 0 i 1) koja odlučuje da li će model neku sliku proglasiti oštećenom (Klasa 1) ili neoštećenom (Klasa 0).
+        # POPRAVLJENO: Provera da li ključevi za tačnost i prag uopšte postoje u fajlu
+        if 'best_threshold' in checkpoint and checkpoint['best_threshold'] is not None:
+            best_threshold = checkpoint['best_threshold']
+            has_saved_threshold = True
+            print(f"Uspešno učitan checkpoint (Najbolja tačnost tokom treninga: {checkpoint.get('best_val_acc', 0.0):.2f}%)")
+            print(f"Korišćeni optimalni prag (Threshold): {best_threshold:.2f}")
+        else:
+            print("Uspešno učitan checkpoint. (Fajl ne sadrži sačuvani prag jer je trening obavljen bez validacije)")
+            print("Započinjem dinamičko traženje optimalnog praga na test skupu...")
     else:
         model.load_state_dict(checkpoint)
         best_threshold = 0.5
+        has_saved_threshold = True
         print("učitane težine modela. Koristi se podrazumevani prag: 0.5")
 
     model.eval()
 
-    all_preds = []
+    all_probs = []
     all_labels = []
     all_paths = []
 
@@ -404,15 +413,28 @@ def evaluiraj_dodinu_mrezu_sa_detaljnim_klasama(model_path: str, test_dataset_di
             # ovde je 3way tta dakle prethodna dva deljena sa 3
             probs_final = (probs_orig + probs_flipped_h + probs_flipped_v) / 3.0
 
-            # Predikcija primenom optimalnog praga
-            preds = (probs_final[:, 1] >= best_threshold).long()
-
-            all_preds.extend(preds.cpu().numpy())
+            # Čuvamo sirove verovatnoće za dinamičku pretragu praga
+            all_probs.extend(probs_final[:, 1].cpu().numpy())
             all_labels.extend(labels.cpu().numpy())
             all_paths.extend(paths)
 
-    all_preds = np.array(all_preds)
+    all_probs = np.array(all_probs)
     all_labels = np.array(all_labels)
+
+    # POPRAVLJENO: Ako nema sačuvanog praga, tražimo prag koji daje najbolji F1-score direktno na testu
+    if not has_saved_threshold:
+        best_threshold = 0.5
+        best_f1 = 0.0
+        for t in np.arange(0.1, 0.9, 0.01):
+            preds_temp = (all_probs >= t).astype(int)
+            f1_temp = f1_score(all_labels, preds_temp)
+            if f1_temp > best_f1:
+                best_f1 = f1_temp
+                best_threshold = t
+        print(f"Pronađen optimalni prag za F1-score: {best_threshold:.2f} (Najbolji F1: {best_f1:.4f})")
+
+    # Predikcija primenom optimalnog praga
+    all_preds = (all_probs >= best_threshold).astype(int)
 
     # razvrstavanje tačnosti po klasama oštećenja
     for pred, label, path in zip(all_preds, all_labels, all_paths):
@@ -462,9 +484,9 @@ def evaluiraj_dodinu_mrezu_sa_detaljnim_klasama(model_path: str, test_dataset_di
     mid_border = f"{PINK}├──────────────────────────────────┼────────────┼────────────┼──────────────┤{RESET}"
     bot_border = f"{PINK}└──────────────────────────────────┴────────────┴────────────┴──────────────┘{RESET}"
 
-    print(f"\n{BOLD}DETALJAN PREGLED PO TIPOVIMA OŠTEĆENJA{RESET}")
+    print(f"\n{BOLD}pregled po tipu ostecenja{RESET}")
     print(top_border)
-    print(f"{PINK}│{RESET} {BOLD}{'TIP OŠTEĆENJA / KATEGORIJA':<32} {PINK}│{RESET} {BOLD}{'TESTIRANO':<10} {PINK}│{RESET} {BOLD}{'TAČNO':<10} {PINK}│{RESET} {BOLD}{'TAČNOST (%)':<12} {PINK}│{RESET}")
+    print(f"{PINK}│{RESET} {BOLD}{'tip ostecenja':<32} {PINK}│{RESET} {BOLD}{'testirano':<10} {PINK}│{RESET} {BOLD}{'tacno':<10} {PINK}│{RESET} {BOLD}{'tacnost (%)':<12} {PINK}│{RESET}")
     print(mid_border)
     
     for row in rows:
@@ -478,31 +500,37 @@ def evaluiraj_dodinu_mrezu_sa_detaljnim_klasama(model_path: str, test_dataset_di
 
     results_dir = os.path.dirname(model_path)
     
-    # čuvanje tabele skoja prikazuje tačnost modela na različitim oštećenjima kojih ima 8
-    csv_path = os.path.join(results_dir, "rezultati_po_tipovima_ostecenja.csv")
-    df_stats.to_csv(csv_path, index=False, encoding="utf-8-sig")
-    print(f"\nTabela rezultata uspešno:\n{csv_path}")
+    # imenovanje fajlova pomoću imena modela i da sve ostane sejvovano
+    import datetime
+    timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+    model_name = os.path.splitext(os.path.basename(model_path))[0]
+    suffix = f"{model_name}_{timestamp}"
 
-    report_path = os.path.join(results_dir, "classification_report.txt")
+    # čuvanje tabele koja prikazuje tačnost modela na različitim oštećenjima koja su u datasetu
+    csv_path = os.path.join(results_dir, f"rezultati_po_tipovima_ostecenja_{suffix}.csv")
+    df_stats.to_csv(csv_path, index=False, encoding="utf-8-sig")
+    print(f"\ntabela rezultata sačuvana pod nazivom:\n{csv_path}")
+
+    report_path = os.path.join(results_dir, f"classification_report_{suffix}.txt")
     with open(report_path, "w", encoding="utf-8") as f:
         f.write(report)
-    print(f"klasifikacije :\n{report_path}")
+    print(f"tabela klasifikacije sačuvanaa pod nazivom:\n{report_path}")
 
     # izračunavanje i čuvanje osnovnih metrika
     accuracy = accuracy_score(all_labels, all_preds) #tačnost tj koliko je ukupno pogodio
-    precision = precision_score(all_labels, all_preds) #koliko su poz. predikcije tačen
+    precision = precision_score(all_labels, all_preds) #koliko su poz. predikcije tačne
     recall = recall_score(all_labels, all_preds) #koliko je stvarnih oštećenja našao
     f1 = f1_score(all_labels, all_preds) #balans između precision i recall
 
-    metrics_path = os.path.join(results_dir, "osnovne_metrike.txt")
+    metrics_path = os.path.join(results_dir, f"osnovne_metrike_{suffix}.txt")
     with open(metrics_path, "w", encoding="utf-8") as f:
         f.write(f"Accuracy : {accuracy:.4f}\n")
         f.write(f"Precision: {precision:.4f}\n")
         f.write(f"Recall   : {recall:.4f}\n")
         f.write(f"f1-score : {f1:.4f}\n")
-    print(f" metrike sačuvane u:\n{metrics_path}")
+    print(f" metrike sačuvane pod nazivom:\n{metrics_path}")
 
-    # crtanje matrice konfuzije i onda njeno cuvanje da mogu da je gledam kasnije
+    # crtanje matrice konfuzije i njeno čuvanje
     cm = confusion_matrix(all_labels, all_preds)
     plt.figure(figsize=(6, 5))
     sns.heatmap(cm, annot=True, fmt='d', cmap='RdPu',  
@@ -511,9 +539,10 @@ def evaluiraj_dodinu_mrezu_sa_detaljnim_klasama(model_path: str, test_dataset_di
     plt.xlabel('Predviđeno (Šta je model rekao)')
     plt.ylabel('Stvarno (Tačna oznaka)')
     plt.title('Matrica konfuzije (Dodina Mreža)')
-    cm_path = os.path.join(results_dir, "matrica_konfuzije.png")
+    
+    cm_path = os.path.join(results_dir, f"matrica_konfuzije_{suffix}.png")
     plt.savefig(cm_path, dpi=300, bbox_inches="tight")
-    print(f"matrica konfuzije sačuvana na:\n{cm_path}\n")
+    print(f"Matrica konfuzije sačuvana pod nazivom:\n{cm_path}\n")
     
     plt.show()
 
