@@ -93,7 +93,7 @@ class SpectralDecomposeBlock(nn.Module):
 
 class SpatialBlock(nn.Module):
 #SpatialBlock obrađuje prostorne karakteristike slike
-#kombinujući osnovne konvolucione filtere, rekurzivnu obradu detalja i redukciju rezolucije radi efikasnijeg izdvajanja vizuelnih informacija.
+#kombinujući osnovne konvolucione filtere, rekurzivnu obradu detalja i redukciju rezolucije radi boljeg i efikasnijeg izdvajanja vizuelnih informacija.
     def __init__(self, in_ch: int, out_ch: int):
         super().__init__()
         self.conv = nn.Sequential(
@@ -339,26 +339,26 @@ def evaluiraj_dodinu_mrezu_sa_detaljnim_klasama(model_path: str, test_dataset_di
         return None, None
 
     test_loader = DataLoader(test_dataset, batch_size=batch_size, shuffle=False, num_workers=2, pin_memory=True)
-    print(f"Pronađeno ukupno {len(test_dataset)} slika za testiranje.")
+    print(f"pronadjeno ukupno {len(test_dataset)} slika za testiranje.")
     model = DodinaMreza(num_classes=2).to(device)
 
-    # učitavanje sačuvanih težina
+    # učitavanje sačuvanih težina  težine odredjuju koliko da se veruje nekoj info tj naučene olduke
     if not os.path.exists(model_path):
-        print(f"Model nije pronađen na putanji: {model_path}")
+        print(f"model nije pronađen u: {model_path}")
         return None, None
 
     checkpoint = torch.load(model_path, map_location=device, weights_only=False)
     
-    # preuzimanje sačuvanih težina i optimalnog praga
+    # preuzimanje sačuvanih težina i optimalnog praga  težine odredjuju koliko da se veruje nekoj info tj naučene olduke
     has_saved_threshold = False
     if 'model_state_dict' in checkpoint:
         model.load_state_dict(checkpoint['model_state_dict'])
-        # POPRAVLJENO: Provera da li ključevi za tačnost i prag uopšte postoje u fajlu
+        # provera da li ključevi za tačnost i prag uopšte postoje 
         if 'best_threshold' in checkpoint and checkpoint['best_threshold'] is not None:
             best_threshold = checkpoint['best_threshold']
             has_saved_threshold = True
-            print(f"Uspešno učitan checkpoint (Najbolja tačnost tokom treninga: {checkpoint.get('best_val_acc', 0.0):.2f}%)")
-            print(f"Korišćeni optimalni prag (Threshold): {best_threshold:.2f}")
+            print(f"učitan checkpoint (Najbolja tačnost tokom treninga: {checkpoint.get('best_val_acc', 0.0):.2f}%)")
+            print(f"korišćeni optimalni prag (Threshold): {best_threshold:.2f}")
         else:
             print("Uspešno učitan checkpoint. (Fajl ne sadrži sačuvani prag jer je trening obavljen bez validacije)")
             print("Započinjem dinamičko traženje optimalnog praga na test skupu...")
@@ -390,22 +390,22 @@ def evaluiraj_dodinu_mrezu_sa_detaljnim_klasama(model_path: str, test_dataset_di
     stats = {name: {'total': 0, 'correct': 0} for name in damage_mapping.values()}
     stats['Bez oštećenja (Čiste slike)'] = {'total': 0, 'correct': 0}
 
-    # Prolazak kroz dataset (ovde ide 3way tta gde se modelu 3 puta prikaze slika)  tj model vidi priginalnu sliku i 2 puta okrenututu)
+    #prolazak kroz dataset (ovde ide 3way tta gde se modelu 3 puta prikaze slika)  tj model vidi priginalnu sliku i 2 puta okrenututu)
     #ukupna verovatnoca je srednja vrednost za ta tri da bi rezultat bio bolji jej
     with torch.no_grad():
         for images, labels, paths in test_loader:
             images = images.to(device)
 
-            # 1. Originalna predikcija
+            # originalna predikcija
             outputs = model(images)
             probs_orig = F.softmax(outputs['logits'], dim=-1)
 
-            # 2. Horizontalni flip
+            # horiz flip
             images_flipped_h = torch.flip(images, dims=[3])
             outputs_flipped_h = model(images_flipped_h)
             probs_flipped_h = F.softmax(outputs_flipped_h['logits'], dim=-1)
 
-            # 3. Vertikalni flip
+            # ver flip
             images_flipped_v = torch.flip(images, dims=[2])
             outputs_flipped_v = model(images_flipped_v)
             probs_flipped_v = F.softmax(outputs_flipped_v['logits'], dim=-1)
@@ -421,7 +421,7 @@ def evaluiraj_dodinu_mrezu_sa_detaljnim_klasama(model_path: str, test_dataset_di
     all_probs = np.array(all_probs)
     all_labels = np.array(all_labels)
 
-    # POPRAVLJENO: Ako nema sačuvanog praga, tražimo prag koji daje najbolji F1-score direktno na testu
+    # ako nema sačuvanog praga, traži se prag koji daje najbolji F1-score direktno na testu
     if not has_saved_threshold:
         best_threshold = 0.5
         best_f1 = 0.0
@@ -433,7 +433,7 @@ def evaluiraj_dodinu_mrezu_sa_detaljnim_klasama(model_path: str, test_dataset_di
                 best_threshold = t
         print(f"Pronađen optimalni prag za F1-score: {best_threshold:.2f} (Najbolji F1: {best_f1:.4f})")
 
-    # Predikcija primenom optimalnog praga
+    # predikcija primenom optimalnog praga
     all_preds = (all_probs >= best_threshold).astype(int)
 
     # razvrstavanje tačnosti po klasama oštećenja
@@ -456,14 +456,14 @@ def evaluiraj_dodinu_mrezu_sa_detaljnim_klasama(model_path: str, test_dataset_di
     ukupna_tacnost = accuracy_score(all_labels, all_preds) * 100
 
     print("\n" + "="*50)
-    print(f"REZULTATI EVALUACIJE MODELA")
-    print(f"Ukupna tačnost modela (Accuracy): {ukupna_tacnost:.2f}%")
+    print(f"rezultati")
+    print(f"ukupna tačnost modela (Accuracy): {ukupna_tacnost:.2f}%")
     print("="*50 + "\n")
-    print("Klasifikacija po klasama:")
+    print("klasifikacija po klasama:")
     report = classification_report(
         all_labels,
         all_preds,
-        target_names=['Klasa 0 (Bez oštećenja)', 'Klasa 1 (Oštećeno)'],
+        target_names=['klasa 0 (bez ostecenja)', 'Klasa 1 (osteceno)'],
         digits=4
     )
     print(report)
@@ -475,7 +475,7 @@ def evaluiraj_dodinu_mrezu_sa_detaljnim_klasama(model_path: str, test_dataset_di
         acc = (correct / total * 100) if total > 0 else 0.0
         rows.append([cat, total, correct, round(acc, 2)])
 
-    df_stats = pd.DataFrame(rows, columns=["Tip oštećenja", "Broj testiranih", "Broj tačnih", "Tačnost (%)"])
+    df_stats = pd.DataFrame(rows, columns=["tip oštećenja", "broj testiranih", "broj tačnih", "tačnost (%)"])
 
     PINK = "\033[38;5;205m"
     RESET = "\033[0m"
