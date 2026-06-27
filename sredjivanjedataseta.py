@@ -396,8 +396,6 @@ def pokreni_ceo_proces(izvorni_dir, izlazna_baza, prosek_treninga=0.8):
         desc_msg="Generisanje Testnog Skupa"
     )
 
-    # 5. Čišćenje privremenih foldera radi uštede prostora na disku
-    print("\n🧹 Čistim privremene datoteke...")
     shutil.rmtree(temp_trening_izvor)
     shutil.rmtree(temp_test_izvor)
 
