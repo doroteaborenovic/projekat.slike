@@ -14,7 +14,6 @@ import pandas as pd
 import matplotlib.pyplot as plt
 import seaborn as sns
 from sklearn.metrics import classification_report, confusion_matrix, accuracy_score, precision_score, recall_score, f1_score
-import datetime  # Dodato za jedinstveno imenovanje fajlova
 
 import warnings
 warnings.filterwarnings('ignore')
@@ -123,7 +122,7 @@ class AsymmetricCrossBridge(nn.Module):
             nn.ReLU(inplace=True)
         )
         self.spectral_to_spatial = nn.Sequential(
-            nn.Conv2d(spectral_ch, spatial_ch, 1), 
+            nn.Conv2d(spectral_ch, spatial_ch, 1),
             nn.BatchNorm2d(spatial_ch),
             nn.ReLU(inplace=True)
         )
@@ -157,7 +156,7 @@ class GatedFusionBlock(nn.Module):
             nn.ReLU(inplace=True),
             nn.Linear(out_ch // 4, out_ch * 2),
             nn.Sigmoid()
-        ) #ovde se gleda cela slika, globalno izračunava koliko je šta važno i daje težine (weights) 
+        ) #ovde se gleda cela slika, globalno izračunava koliko je šta važno i daje težine (weights)
         #težine su brojevi koje model uči tokom treninga da bi odlučio koliko da veruje nekoj određenoj info
 
     def forward(self, spatial: Tensor, spectral: Tensor) -> Tensor:
@@ -348,12 +347,12 @@ def evaluiraj_dodinu_mrezu_sa_detaljnim_klasama(model_path: str, test_dataset_di
         return None, None
 
     checkpoint = torch.load(model_path, map_location=device, weights_only=False)
-    
+
     # preuzimanje sačuvanih težina i optimalnog praga  težine odredjuju koliko da se veruje nekoj info tj naučene olduke
     has_saved_threshold = False
     if 'model_state_dict' in checkpoint:
         model.load_state_dict(checkpoint['model_state_dict'])
-        # provera da li ključevi za tačnost i prag uopšte postoje 
+        # provera da li ključevi za tačnost i prag uopšte postoje
         if 'best_threshold' in checkpoint and checkpoint['best_threshold'] is not None:
             best_threshold = checkpoint['best_threshold']
             has_saved_threshold = True
@@ -488,33 +487,34 @@ def evaluiraj_dodinu_mrezu_sa_detaljnim_klasama(model_path: str, test_dataset_di
     print(top_border)
     print(f"{PINK}│{RESET} {BOLD}{'tip ostecenja':<32} {PINK}│{RESET} {BOLD}{'testirano':<10} {PINK}│{RESET} {BOLD}{'tacno':<10} {PINK}│{RESET} {BOLD}{'tacnost (%)':<12} {PINK}│{RESET}")
     print(mid_border)
-    
+
     for row in rows:
         cat_name = row[0]
         tested = row[1]
         correct = row[2]
         accuracy_val = f"{row[3]:.2f}%"
         print(f"{PINK}│{RESET} {cat_name:<32} {PINK}│{RESET} {tested:<10d} {PINK}│{RESET} {correct:<10d} {PINK}│{RESET} {accuracy_val:<12} {PINK}│{RESET}")
-            
+
     print(bot_border)
 
     results_dir = os.path.dirname(model_path)
-    
-    # imenovanje fajlova pomoću imena modela i da sve ostane sejvovano
-    import datetime
-    timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
-    model_name = os.path.splitext(os.path.basename(model_path))[0]
-    suffix = f"{model_name}_{timestamp}"
+
+    # ovo je za automatsko pronalaženje sledećeg slobodnog indeksa (tabela_1, tabela_2, ...)
+    # Ovo ti garantuje da se prethodno sačuvani podaci nikada neće prebrisati!
+    idx = 1
+    while os.path.exists(os.path.join(results_dir, f"tabela_{idx}.csv")):
+        idx += 1
 
     # čuvanje tabele koja prikazuje tačnost modela na različitim oštećenjima koja su u datasetu
-    csv_path = os.path.join(results_dir, f"rezultati_po_tipovima_ostecenja_{suffix}.csv")
+    csv_path = os.path.join(results_dir, f"tabela_{idx}.csv")
     df_stats.to_csv(csv_path, index=False, encoding="utf-8-sig")
-    print(f"\ntabela rezultata sačuvana pod nazivom:\n{csv_path}")
+    print(f"\nTabela rezultata uspešno sačuvana:\n{csv_path}")
 
-    report_path = os.path.join(results_dir, f"classification_report_{suffix}.txt")
+    # classification_report se  čuva kao izvestaj_klasifikacije_{idx}.txt
+    report_path = os.path.join(results_dir, f"izvestaj_klasifikacije_{idx}.txt")
     with open(report_path, "w", encoding="utf-8") as f:
         f.write(report)
-    print(f"tabela klasifikacije sačuvanaa pod nazivom:\n{report_path}")
+    print(f"Tabela klasifikacije sačuvana pod nazivom:\n{report_path}")
 
     # izračunavanje i čuvanje osnovnih metrika
     accuracy = accuracy_score(all_labels, all_preds) #tačnost tj koliko je ukupno pogodio
@@ -522,28 +522,31 @@ def evaluiraj_dodinu_mrezu_sa_detaljnim_klasama(model_path: str, test_dataset_di
     recall = recall_score(all_labels, all_preds) #koliko je stvarnih oštećenja našao
     f1 = f1_score(all_labels, all_preds) #balans između precision i recall
 
-    metrics_path = os.path.join(results_dir, f"osnovne_metrike_{suffix}.txt")
+    # metrike se sada čuvaju kao metrike_{idx}.txt
+
+    metrics_path = os.path.join(results_dir, f"metrike_{idx}.txt")
     with open(metrics_path, "w", encoding="utf-8") as f:
         f.write(f"Accuracy : {accuracy:.4f}\n")
         f.write(f"Precision: {precision:.4f}\n")
         f.write(f"Recall   : {recall:.4f}\n")
         f.write(f"f1-score : {f1:.4f}\n")
-    print(f" metrike sačuvane pod nazivom:\n{metrics_path}")
+    print(f"Metrike sačuvane pod nazivom:\n{metrics_path}")
 
     # crtanje matrice konfuzije i njeno čuvanje
     cm = confusion_matrix(all_labels, all_preds)
     plt.figure(figsize=(6, 5))
-    sns.heatmap(cm, annot=True, fmt='d', cmap='RdPu',  
+    sns.heatmap(cm, annot=True, fmt='d', cmap='RdPu',
                 xticklabels=['Bez oštećenja', 'Oštećeno'],
                 yticklabels=['Bez oštećenja', 'Oštećeno'])
     plt.xlabel('Predviđeno (Šta je model rekao)')
     plt.ylabel('Stvarno (Tačna oznaka)')
     plt.title('Matrica konfuzije (Dodina Mreža)')
-    
-    cm_path = os.path.join(results_dir, f"matrica_konfuzije_{suffix}.png")
+    #cuvanje matr konfuzije redom
+
+    cm_path = os.path.join(results_dir, f"matrica_konfuzije_{idx}.png")
     plt.savefig(cm_path, dpi=300, bbox_inches="tight")
-    print(f"Matrica konfuzije sačuvana pod nazivom:\n{cm_path}\n")
-    
+    print(f"Matrica konfuzije sačuvana na:\n{cm_path}\n")
+
     plt.show()
 
     return all_labels, all_preds
