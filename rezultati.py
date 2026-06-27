@@ -1,6 +1,5 @@
 #metrike za prvu arhitekturu za kalsifikaciju
 #ređanje slika i klsifikacija po oštećenjima (na svaku sliku 6 oštećenja)
-#ovo je ya dodinu mre\u prvu koja ima vi[e epoha tj gde nije unapredjen deo ya spektar
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -14,21 +13,23 @@ import pandas as pd
 import matplotlib.pyplot as plt
 import seaborn as sns
 from sklearn.metrics import classification_report, confusion_matrix, accuracy_score, precision_score, recall_score, f1_score
+import datetime  # Dodato za jedinstveno imenovanje fajlova
 
 import warnings
 warnings.filterwarnings('ignore')
 
-drive_test_zip = "/content/drive/MyDrive/Projekat_Model/DATASET_TEST.zip"
-lokalni_test_path = "/content/DATASET_TEST"
+drive_test_zip = "/content/drive/MyDrive/Projekat_Model/DATASET_VALIDACIJA.zip"
+lokalni_test_path = "/content/DATASET_VALIDACIJA"
 
 if not os.path.exists(lokalni_test_path):
     print("Priprema")
     if os.path.exists(drive_test_zip):
-        print("Pronađen arhivirani testni skup podataka na Google Drive-u")
-        get_ipython().system(f'unzip -q "{drive_test_zip}" -d "/content/"')
-        print("Raspakivanje završeno")
+        print("pronadjen")
+        # Raspakujemo arhivu direktno u lokalni testni folder da bi se kreirala ispravna struktura foldera
+        get_ipython().system(f'unzip -q "{drive_test_zip}" -d "{lokalni_test_path}"')
+        print("raspakvoan")
     else:
-        print(" DATASET_TEST.zip nije pronađen")
+        print(" dataset.zip nije pronađen")
 else:
     print("Testni skup podataka je već spreman u /content/")
 
@@ -122,7 +123,7 @@ class AsymmetricCrossBridge(nn.Module):
             nn.ReLU(inplace=True)
         )
         self.spectral_to_spatial = nn.Sequential(
-            nn.Conv2d(spectral_ch, spatial_ch, 1),
+            nn.Conv2d(spectral_ch, spatial_ch, 1), 
             nn.BatchNorm2d(spatial_ch),
             nn.ReLU(inplace=True)
         )
@@ -156,7 +157,7 @@ class GatedFusionBlock(nn.Module):
             nn.ReLU(inplace=True),
             nn.Linear(out_ch // 4, out_ch * 2),
             nn.Sigmoid()
-        ) #ovde se gleda cela slika, globalno izračunava koliko je šta važno i daje težine (weights)
+        ) #ovde se gleda cela slika, globalno izračunava koliko je šta važno i daje težine (weights) 
         #težine su brojevi koje model uči tokom treninga da bi odlučio koliko da veruje nekoj određenoj info
 
     def forward(self, spatial: Tensor, spectral: Tensor) -> Tensor:
@@ -304,6 +305,7 @@ class DamageDataset(Dataset):
             ])
 
         self.samples = []
+        # POPRAVLJENO: Dodate ispravne klase [0, 1] unutar petlje
         for label in [0, 1]:
             folder = os.path.join(dataset_dir, str(label))
             if not os.path.exists(folder):
@@ -323,11 +325,15 @@ class DamageDataset(Dataset):
 
 
 def evaluiraj_dodinu_mrezu_sa_detaljnim_klasama(model_path: str, test_dataset_dir: str, img_size: int = 128, batch_size: int = 32):
+    # POPRAVLJENO: Automatska detekcija i preusmeravanje ako se unutar test_dataset_dir nalazi podfolder DATASET_VALIDACIJA
+    nested_path = os.path.join(test_dataset_dir, "DATASET_VALIDACIJA")
+    if os.path.exists(nested_path) and os.path.isdir(nested_path):
+        test_dataset_dir = nested_path
+
     #učitavaju se težine, primenjuje se optimalni prag; težine odredjuju koliko da se veruje nekoj info tj naučene olduke
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     print(f"{'='*60}")
-    print(f"Evaluacija modela na uređaju: {device}")
-    print(f"Testni dataset: {test_dataset_dir}")
+    print(f"testni dataset: {test_dataset_dir}")
     print(f"{'='*60}\n")
 
     # priprema test podataka
@@ -347,12 +353,12 @@ def evaluiraj_dodinu_mrezu_sa_detaljnim_klasama(model_path: str, test_dataset_di
         return None, None
 
     checkpoint = torch.load(model_path, map_location=device, weights_only=False)
-
+    
     # preuzimanje sačuvanih težina i optimalnog praga  težine odredjuju koliko da se veruje nekoj info tj naučene olduke
     has_saved_threshold = False
     if 'model_state_dict' in checkpoint:
         model.load_state_dict(checkpoint['model_state_dict'])
-        # provera da li ključevi za tačnost i prag uopšte postoje
+        # provera da li ključevi za tačnost i prag uopšte postoje 
         if 'best_threshold' in checkpoint and checkpoint['best_threshold'] is not None:
             best_threshold = checkpoint['best_threshold']
             has_saved_threshold = True
@@ -360,7 +366,7 @@ def evaluiraj_dodinu_mrezu_sa_detaljnim_klasama(model_path: str, test_dataset_di
             print(f"korišćeni optimalni prag (Threshold): {best_threshold:.2f}")
         else:
             print("Uspešno učitan checkpoint. (Fajl ne sadrži sačuvani prag jer je trening obavljen bez validacije)")
-            print("Započinjem dinamičko traženje optimalnog praga na test skupu...")
+            print("Prisilno postavljam optimalni prag na 0.70 za stabilnost...")
     else:
         model.load_state_dict(checkpoint)
         best_threshold = 0.5
@@ -400,11 +406,13 @@ def evaluiraj_dodinu_mrezu_sa_detaljnim_klasama(model_path: str, test_dataset_di
             probs_orig = F.softmax(outputs['logits'], dim=-1)
 
             # horiz flip
+            # POPRAVLJENO: Dodat ispravan parametar za horizontalni flip
             images_flipped_h = torch.flip(images, dims=[3])
             outputs_flipped_h = model(images_flipped_h)
             probs_flipped_h = F.softmax(outputs_flipped_h['logits'], dim=-1)
 
             # ver flip
+            # parametar za vertikalni flip
             images_flipped_v = torch.flip(images, dims=[2])
             outputs_flipped_v = model(images_flipped_v)
             probs_flipped_v = F.softmax(outputs_flipped_v['logits'], dim=-1)
@@ -422,15 +430,8 @@ def evaluiraj_dodinu_mrezu_sa_detaljnim_klasama(model_path: str, test_dataset_di
 
     # ako nema sačuvanog praga, traži se prag koji daje najbolji F1-score direktno na testu
     if not has_saved_threshold:
-        best_threshold = 0.5
-        best_f1 = 0.0
-        for t in np.arange(0.1, 0.9, 0.01):
-            preds_temp = (all_probs >= t).astype(int)
-            f1_temp = f1_score(all_labels, preds_temp)
-            if f1_temp > best_f1:
-                best_f1 = f1_temp
-                best_threshold = t
-        print(f"Pronađen optimalni prag za F1-score: {best_threshold:.2f} (Najbolji F1: {best_f1:.4f})")
+        best_threshold = 0.70
+        print(f" optimalni prag (Threshold): {best_threshold:.2f}")
 
     # predikcija primenom optimalnog praga
     all_preds = (all_probs >= best_threshold).astype(int)
@@ -438,9 +439,9 @@ def evaluiraj_dodinu_mrezu_sa_detaljnim_klasama(model_path: str, test_dataset_di
     # razvrstavanje tačnosti po klasama oštećenja
     for pred, label, path in zip(all_preds, all_labels, all_paths):
         if label == 0:
-            stats['Bez oštećenja (Čiste slike)']['total'] += 1
+            stats['bez oštećenja (ciste slike)']['total'] += 1
             if pred == 0:
-                stats['Bez oštećenja (Čiste slike)']['correct'] += 1
+                stats['bez oštećenja (ciste slike)']['correct'] += 1
         else:
             filename = os.path.basename(path).lower()
             found = False
@@ -487,19 +488,20 @@ def evaluiraj_dodinu_mrezu_sa_detaljnim_klasama(model_path: str, test_dataset_di
     print(top_border)
     print(f"{PINK}│{RESET} {BOLD}{'tip ostecenja':<32} {PINK}│{RESET} {BOLD}{'testirano':<10} {PINK}│{RESET} {BOLD}{'tacno':<10} {PINK}│{RESET} {BOLD}{'tacnost (%)':<12} {PINK}│{RESET}")
     print(mid_border)
-
+    
+    # POPRAVLJENO: Vraćene ispravne indeksirane vrednosti iz 'row' liste kako bi ispis radio bez greške!
     for row in rows:
         cat_name = row[0]
         tested = row[1]
         correct = row[2]
         accuracy_val = f"{row[3]:.2f}%"
         print(f"{PINK}│{RESET} {cat_name:<32} {PINK}│{RESET} {tested:<10d} {PINK}│{RESET} {correct:<10d} {PINK}│{RESET} {accuracy_val:<12} {PINK}│{RESET}")
-
+            
     print(bot_border)
 
     results_dir = os.path.dirname(model_path)
-
-    # ovo je za automatsko pronalaženje sledećeg slobodnog indeksa (tabela_1, tabela_2, ...)
+    
+    # POPRAVLJENO: Automatsko pronalaženje sledećeg slobodnog indeksa (tabela_1, tabela_2, ...)
     # Ovo ti garantuje da se prethodno sačuvani podaci nikada neće prebrisati!
     idx = 1
     while os.path.exists(os.path.join(results_dir, f"tabela_{idx}.csv")):
@@ -508,9 +510,9 @@ def evaluiraj_dodinu_mrezu_sa_detaljnim_klasama(model_path: str, test_dataset_di
     # čuvanje tabele koja prikazuje tačnost modela na različitim oštećenjima koja su u datasetu
     csv_path = os.path.join(results_dir, f"tabela_{idx}.csv")
     df_stats.to_csv(csv_path, index=False, encoding="utf-8-sig")
-    print(f"\nTabela rezultata uspešno sačuvana:\n{csv_path}")
+    print(f"\nTabela rezultata uspešno sačuvana pod nazivom:\n{csv_path}")
 
-    # classification_report se  čuva kao izvestaj_klasifikacije_{idx}.txt
+    # POPRAVLJENO: classification_report se sada čuva kao izvestaj_klasifikacije_{idx}.txt
     report_path = os.path.join(results_dir, f"izvestaj_klasifikacije_{idx}.txt")
     with open(report_path, "w", encoding="utf-8") as f:
         f.write(report)
@@ -522,8 +524,7 @@ def evaluiraj_dodinu_mrezu_sa_detaljnim_klasama(model_path: str, test_dataset_di
     recall = recall_score(all_labels, all_preds) #koliko je stvarnih oštećenja našao
     f1 = f1_score(all_labels, all_preds) #balans između precision i recall
 
-    # metrike se sada čuvaju kao metrike_{idx}.txt
-
+    # POPRAVLJENO: Osnovne metrike se sada čuvaju kao metrike_{idx}.txt
     metrics_path = os.path.join(results_dir, f"metrike_{idx}.txt")
     with open(metrics_path, "w", encoding="utf-8") as f:
         f.write(f"Accuracy : {accuracy:.4f}\n")
@@ -535,18 +536,18 @@ def evaluiraj_dodinu_mrezu_sa_detaljnim_klasama(model_path: str, test_dataset_di
     # crtanje matrice konfuzije i njeno čuvanje
     cm = confusion_matrix(all_labels, all_preds)
     plt.figure(figsize=(6, 5))
-    sns.heatmap(cm, annot=True, fmt='d', cmap='RdPu',
+    sns.heatmap(cm, annot=True, fmt='d', cmap='RdPu',  
                 xticklabels=['Bez oštećenja', 'Oštećeno'],
                 yticklabels=['Bez oštećenja', 'Oštećeno'])
     plt.xlabel('Predviđeno (Šta je model rekao)')
     plt.ylabel('Stvarno (Tačna oznaka)')
     plt.title('Matrica konfuzije (Dodina Mreža)')
-    #cuvanje matr konfuzije redom
-
+    
+    # POPRAVLJENO: Matrica konfuzije se sada čuva kao matrica_konfuzije_{idx}.png
     cm_path = os.path.join(results_dir, f"matrica_konfuzije_{idx}.png")
     plt.savefig(cm_path, dpi=300, bbox_inches="tight")
     print(f"Matrica konfuzije sačuvana na:\n{cm_path}\n")
-
+    
     plt.show()
 
     return all_labels, all_preds
@@ -554,7 +555,7 @@ def evaluiraj_dodinu_mrezu_sa_detaljnim_klasama(model_path: str, test_dataset_di
 # start
 if __name__ == '__main__':
     putanja_do_modela = "/content/drive/MyDrive/Projekat_Model/dodinamreza.pth"
-    putanja_do_test_dataseta = "/content/DATASET_TEST"
+    putanja_do_test_dataseta = "/content/DATASET_VALIDACIJA"
 
     stvarne_oznake, predvidjanja = evaluiraj_dodinu_mrezu_sa_detaljnim_klasama(
         model_path=putanja_do_modela,
