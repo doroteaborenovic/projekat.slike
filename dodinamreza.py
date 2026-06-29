@@ -410,6 +410,7 @@ def train_dodina_mreza(
     val_dataset = DamageDataset(dataset_dir, img_size=img_size, train=False)
 
     if len(train_dataset) == 0:
+        print("\nGreška: Skup podataka za trening je prazan! Proverite putanje foldera 0 i 1.")
         return None, None
 
     # Grupisanje slika na osnovu njihovih naziva (npr. ekstrakcija ID-ja pacijenta/objekta pre simbola '_')
@@ -462,8 +463,10 @@ def train_dodina_mreza(
     start_epoch = 0
     best_val_acc = 0.0
     best_threshold = 0.5
-    # POPRAVLJENO: Učitava se stari model (dodina mreza.pth) sa Drive-a
+    
+    # POPRAVLJENO: Učitavanje i bezbedno upisivanje modela na Drive
     checkpoint_path = os.path.join(save_dir, 'dodinamreza.pth')
+    local_checkpoint_path = '/content/dodinamrezajej_temp.pth'
 
     # Logika za nastavak treniranja ukoliko već postoji sačuvan checkpoint (.pth fajl)
     if resume and os.path.exists(checkpoint_path):
@@ -546,15 +549,12 @@ def train_dodina_mreza(
                 val_loss += losses['total'].item()
                 
                 # 3-way Test-Time Augmentation (TTA):
-                # 1. Verovatnoća za originalnu sliku
                 probs_orig = F.softmax(outputs['logits'], dim=-1)
 
-                # POPRAVLJENO: Dodata tačna horizontalna dimenzija
                 images_flipped_h = torch.flip(images, dims=[3])
                 outputs_flipped_h = model(images_flipped_h)
                 probs_flipped_h = F.softmax(outputs_flipped_h['logits'], dim=-1)
 
-                # POPRAVLJENO: Dodata tačna vertikalna dimenzija
                 images_flipped_v = torch.flip(images, dims=[2])
                 outputs_flipped_v = model(images_flipped_v)
                 probs_flipped_v = F.softmax(outputs_flipped_v['logits'], dim=-1)
@@ -574,7 +574,6 @@ def train_dodina_mreza(
         best_f1_epoch = 0.0
 
         # Dinamička pretraga klasifikacionog praga (threshold) od 0.1 do 0.9 sa korakom 0.01 
-        # Traži se prag koji maksimizuje F1-score na validacionom skupu u tekućoj epohi
         for t in np.arange(0.1, 0.9, 0.01):
             preds = (val_probs_arr >= t).astype(int)
             f1 = f1_score(val_labels_arr, preds)
@@ -595,28 +594,31 @@ def train_dodina_mreza(
         if val_acc > best_val_acc:
             best_val_acc = val_acc
             best_threshold = best_t_epoch
-            os.makedirs(save_dir, exist_ok=True)
-            # Čuva se pod tvojim izabranim nazivom 'dodina mreza.pth'
-            torch.save({
-                'epoch': epoch + 1,
-                'model_state_dict': model.state_dict(),
-                'optimizer_state_dict': optimizer.state_dict(),
-                'scheduler_state_dict': scheduler.state_dict(),
-                'best_val_acc': best_val_acc,
-                'best_threshold': best_threshold, # Čuvanje praga koji je dao najbolji rezultat
-            }, checkpoint_path)
             marker = f" ★ BEST (Optimalni T za F1 na {best_t_epoch:.2f} daje F1: {best_f1_epoch:.4f})"
         else:
-            # Čuvanje trenutne epohe (čak i ako nije apsolutni BEST) da ne izgubiš progres
-            torch.save({
-                'epoch': epoch + 1,
-                'model_state_dict': model.state_dict(),
-                'optimizer_state_dict': optimizer.state_dict(),
-                'scheduler_state_dict': scheduler.state_dict(),
-                'best_val_acc': best_val_acc,
-                'best_threshold': best_threshold,
-            }, checkpoint_path)
             marker = f" (Optimalni T za F1 na {best_t_epoch:.2f} daje F1: {best_f1_epoch:.4f})"
+
+        # Podaci za snimanje kontrolne tačke
+        checkpoint_data = {
+            'epoch': epoch + 1,
+            'model_state_dict': model.state_dict(),
+            'optimizer_state_dict': optimizer.state_dict(),
+            'scheduler_state_dict': scheduler.state_dict(),
+            'best_val_acc': best_val_acc,
+            'best_threshold': best_threshold,
+        }
+
+        # POPRAVLJENO: Prvo sačuvamo lokalno u Colab okruženju kako bismo izbegli grešku drajvera na Drive-u
+        torch.save(checkpoint_data, local_checkpoint_path)
+
+        # Potom kopiramo fajl na Google Drive pomoću klasičnog stream prenosa koji ne puca
+        try:
+            import shutil
+            os.makedirs(save_dir, exist_ok=True)
+            shutil.copy(local_checkpoint_path, checkpoint_path)
+        except Exception as e:
+            print(f"\n[Upozorenje] Greška tokom kopiranja na Google Drive: {e}")
+            print("Model je ipak uspešno sačuvan lokalno u virtuelnom okruženju Colaba.")
 
         # zapisivanje metrika u istoriju za kasniju analizu
         history['train_loss'].append(train_loss)
@@ -644,26 +646,60 @@ if __name__ == '__main__':
     drive_dataset_path = "/content/drive/MyDrive/Projekat_Model/DATASET_TRENING"
     drive_zip_path = "/content/drive/MyDrive/Projekat_Model/DATASET_TRENING.zip"
     local_dataset_path = "/content/DATASET_TRENING"
+    
     from google.colab import drive
     if not os.path.exists("/content/drive"):
         drive.mount('/content/drive')
-    if not os.path.exists(local_dataset_path):
+        
+    # POPRAVLJENO: Provera validnosti lokalnog skupa pre nego što preskočimo pripremu
+    dataset_ready = (
+        os.path.exists(local_dataset_path) and 
+        os.path.exists(os.path.join(local_dataset_path, "0")) and 
+        os.path.exists(os.path.join(local_dataset_path, "1"))
+    )
+
+    if not dataset_ready:
         print("pripremam dataset")
+        # Ukoliko postoji neki polovičan ili prazan folder, brišemo ga da počnemo čisto
+        if os.path.exists(local_dataset_path):
+            import shutil
+            shutil.rmtree(local_dataset_path, ignore_errors=True)
 
         if os.path.exists(drive_zip_path):
             print("nadjen zip i otpakujem")
             # Pokretanje bash komande za tiho otpakivanje zip arhive u /content/
             get_ipython().system(f'unzip -q "{drive_zip_path}" -d "/content/"')
             print("otpakivanje uspešno završeno")
+            
+            # --- SAMOISCELJUJUĆA LOGIKA ZA RAZLIČITE STRUKTURE ZIP-A ---
+            # Slučaj A: Ako su folderi '0' i '1' ispali direktno u /content/
+            if os.path.exists("/content/0") and os.path.exists("/content/1"):
+                os.makedirs(local_dataset_path, exist_ok=True)
+                import shutil
+                shutil.move("/content/0", os.path.join(local_dataset_path, "0"))
+                shutil.move("/content/1", os.path.join(local_dataset_path, "1"))
+                print("Sređene putanje: Folderi 0 i 1 su uspešno premešteni u /content/DATASET_TRENING/")
+                
+            # Slučaj B: Ako je zip napravio dvostruki DATASET_TRENING folder
+            elif os.path.exists(os.path.join(local_dataset_path, "DATASET_TRENING")):
+                import shutil
+                sub_0 = os.path.join(local_dataset_path, "DATASET_TRENING", "0")
+                sub_1 = os.path.join(local_dataset_path, "DATASET_TRENING", "1")
+                if os.path.exists(sub_0):
+                    shutil.move(sub_0, os.path.join(local_dataset_path, "0"))
+                if os.path.exists(sub_1):
+                    shutil.move(sub_1, os.path.join(local_dataset_path, "1"))
+                shutil.rmtree(os.path.join(local_dataset_path, "DATASET_TRENING"))
+                print("Sređene putanje: Sadržaj izvučen iz dvostrukog DATASET_TRENING foldera.")
+                
         elif os.path.exists(drive_dataset_path):
-            print("Nema .zip fajla")
-            # Pokretanje bash komande za kopiranje celog direktorijuma sa Drive-a
+            print("Nema .zip fajla, kopiram ceo direktorijum sa Google Drive-a")
             get_ipython().system(f'cp -r "{drive_dataset_path}" "/content/"')
             print("Kopiranje done")
         else:
             print("nema dataseta")
     else:
-        print("dataset u lokalnom direktorijumu /content/.")
+        print("dataset u lokalnom direktorijumu /content/ je spreman i sadrži ispravne foldere (0 i 1).")
 
     # Pokretanje nastavka treninga modela
     model, history = train_dodina_mreza(
