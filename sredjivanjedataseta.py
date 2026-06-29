@@ -5,166 +5,396 @@ import random
 import shutil
 from tqdm import tqdm
 
-
 def apply_anisotropic_diffusion(img, severity=0.5):
-#simulacija vlage + sivila da deluje jako staro i da se jako malo detalja vidi i da je blurovana 
-    steps = int(20 + severity * 80)
-    b = 0.1 + (1 - severity) * 0.1
-    lam = 0.15
+    # simulacija vlage + blagog zamućenja bez prejakog zatamnjenja
+
+    steps = int(15 + severity * 60)   # manje agresivno nego pre
+    b = 0.15 + (1 - severity) * 0.12  # jača difuzija = mekše promene
+    lam = 0.12                        # malo stabilnije od 0.15
+
     img_f = img.astype(np.float32) / 255.0
     im = cv2.cvtColor(img_f, cv2.COLOR_RGB2GRAY)
-    
+
     for t in range(steps):
-#cuvanje iivica slike i racunanje razlika u intenzitetu piksela
         im_new = im.copy()
+
         dn = im[:-2, 1:-1] - im[1:-1, 1:-1]
         ds = im[2:, 1:-1] - im[1:-1, 1:-1]
         de = im[1:-1, 2:] - im[1:-1, 1:-1]
         dw = im[1:-1, :-2] - im[1:-1, 1:-1]
-        im_new[1:-1, 1:-1] = im[1:-1, 1:-1] + lam * (
+
+        diffusion = (
             np.exp(-1 * (dn ** 2) / (b ** 2)) * dn +
             np.exp(-1 * (ds ** 2) / (b ** 2)) * ds +
             np.exp(-1 * (de ** 2) / (b ** 2)) * de +
             np.exp(-1 * (dw ** 2) / (b ** 2)) * dw
         )
+
+        im_new[1:-1, 1:-1] = im[1:-1, 1:-1] + lam * diffusion
+
+        # 🔥 ključ FIX: sprečiti “crnjenje”
+        im_new = np.clip(im_new, 0.05, 0.95)
+
         im = im_new
+
     res = (im * 255).astype(np.uint8)
+
+    # 🔥 dodatni realističan blur (umesto tamnjenja)
+    blur_strength = 1 + severity * 2.5
+    res = cv2.GaussianBlur(res, (0, 0), blur_strength)
+
+    # 🔥 blago vraćanje kontrasta (da ne bude “mrtvo” sivo)
+    res = cv2.normalize(res, None, 20, 235, cv2.NORM_MINMAX)
+
     return cv2.cvtColor(res, cv2.COLOR_GRAY2RGB)
 
-
 def apply_mold_and_decay(img, severity=0.5):
-#budj koja prati putanju vlage
+    # budj koja prati putanju vlage (lokalne zelene fleke, ne globalno)
+
     h, w, _ = img.shape
     img_f = img.astype(np.float32) / 255.0
-    layers = []
-    for scale in [8, 16, 32]:  
-        noise = cv2.resize(np.random.rand(scale, scale).astype(np.float32), (w, h))
-        layers.append(noise)
-        
-    f_map = (0.5 * layers[0] + 0.3 * layers[1] + 0.2 * layers[2])  
-    f_map = 1 / (1 + np.exp(-12 * (f_map - (0.7 - severity * 0.2))))
-    mold_core = np.zeros((h, w), dtype=np.float32)
-    seeds = np.where(f_map > 0.8)
-    
-    num_points = len(seeds[0])
-    if num_points > 0:
-        num_seeds = min(int(10 * severity), num_points)
-        if num_seeds > 0:
-            idx = np.random.choice(num_points, num_seeds, replace=False)
-            mold_core[seeds[0][idx], seeds[1][idx]] = 1.0  
-            
-    kernel = np.array([[0.1, 0.2, 0.1], [0.2, 0.0, 0.2], [0.1, 0.2, 0.1]], dtype=np.float32)
-    for _ in range(int(20 + severity * 40)):
-        spread = cv2.filter2D(mold_core, -1, kernel)
-        mold_core = mold_core * 0.8 + spread * (f_map + 0.2) * 0.7
-    mold_core = np.clip(mold_core * 2.5, 0, 1)
-    color_core = np.array([0.02, 0.06, 0.04])
-    final = img_f.copy()
-    for i in range(3):
-        final[:, :, i] = final[:, :, i] * (1 - mold_core * 0.8) + (color_core[i] * mold_core * 0.8)
-    return (np.clip(final, 0, 1) * 255).astype(np.uint8)
 
+    # multi-scale moisture / humidity map
+    layers = []
+    for scale in [8, 16, 32]:
+        noise = cv2.resize(
+            np.random.rand(scale, scale).astype(np.float32),
+            (w, h),
+            interpolation=cv2.INTER_CUBIC
+        )
+        noise = cv2.GaussianBlur(noise, (0, 0), 6)
+        layers.append(noise)
+
+    moisture_map = (
+        0.5 * layers[0] +
+        0.3 * layers[1] +
+        0.2 * layers[2]
+    )
+
+    # sigmoid → gde može da se razvije budj
+    threshold = 0.72 - severity * 0.18
+    f_map = 1 / (1 + np.exp(-12 * (moisture_map - threshold)))
+
+    mold_core = np.zeros((h, w), np.float32)
+
+    seeds = np.where(f_map > 0.8)
+    if len(seeds[0]) > 0:
+        num_seeds = min(int(15 + severity * 40), len(seeds[0]))
+        idx = np.random.choice(len(seeds[0]), num_seeds, replace=False)
+        mold_core[seeds[0][idx], seeds[1][idx]] = 1.0
+
+    # spread kernel (organski rast)
+    kernel = np.array([
+        [0.1, 0.2, 0.1],
+        [0.2, 0.0, 0.2],
+        [0.1, 0.2, 0.1]
+    ], dtype=np.float32)
+
+    for _ in range(int(25 + severity * 60)):
+        spread = cv2.filter2D(mold_core, -1, kernel)
+        mold_core = mold_core * 0.82 + spread * (f_map + 0.25)
+
+    mold_core = np.clip(mold_core * 3.0, 0, 1)
+
+    # 🔥 real mold color (greenish organic patches)
+    mold_color = np.array([0.02, 0.10, 0.04])
+
+    result = img_f.copy()
+    for c in range(3):
+        result[:, :, c] = (
+            result[:, :, c] * (1 - mold_core * 0.85)
+            + mold_color[c] * mold_core * 0.85
+        )
+
+    return (np.clip(result, 0, 1) * 255).astype(np.uint8)
 
 def apply_chemical_aging(img, severity=0.5):
-#simulacija zutila tj izgleda kaod a je slika ubačena u kafu tj jako stara 
+    # realistična hemijska degradacija (oksidacija + fleke + starenje papira)
+
     h, w, _ = img.shape
     img_f = img.astype(np.float32) / 255.0
-    lab = cv2.cvtColor((img_f * 255).astype(np.uint8), cv2.COLOR_RGB2LAB).astype(np.float32)
-    Y, X = np.ogrid[:h, :w]
-    dist = ((X - w // 2) ** 2 / (w / 1.5) ** 2 + (Y - h // 2) ** 2 / (h / 2) ** 2)
-    fade_map = np.clip(dist * severity, 0, 1)
-    lab[:, :, 0] = lab[:, :, 0] * (1 - 0.2 * fade_map) + (fade_map * 40 * severity)
-    lab[:, :, 2] += 35 * fade_map * severity
-    return cv2.cvtColor(np.clip(lab, 0, 255).astype(np.uint8), cv2.COLOR_LAB2RGB)
 
+    lab = cv2.cvtColor((img_f * 255).astype(np.uint8), cv2.COLOR_RGB2LAB).astype(np.float32)
+
+    Y, X = np.ogrid[:h, :w]
+
+    # =========================
+    # 📜 paper aging field (edge + random oxidation)
+    # =========================
+    edge_decay = np.minimum(
+        np.minimum(X / w, (w - X) / w),
+        np.minimum(Y / h, (h - Y) / h)
+    )
+
+    edge_decay = 1 - edge_decay  # više na ivicama
+
+    noise = cv2.resize(np.random.rand(14, 14).astype(np.float32), (w, h), interpolation=cv2.INTER_CUBIC)
+    noise = cv2.GaussianBlur(noise, (0, 0), 7)
+
+    aging_field = edge_decay * (0.6 + 0.9 * noise)
+
+    # =========================
+    # ☕ oxidation + chemical burn
+    # =========================
+    lab[:, :, 0] -= (18 + 40 * severity) * aging_field   # darkening
+    lab[:, :, 1] += (10 + 30 * severity) * aging_field   # red shift
+    lab[:, :, 2] += (30 + 90 * severity) * aging_field   # yellowing
+
+    stain_seed = cv2.GaussianBlur(np.random.rand(h, w).astype(np.float32), (0, 0), 12)
+
+    stain = stain_seed * aging_field
+    stain = cv2.GaussianBlur(stain, (0, 0), 10)
+
+    lab[:, :, 0] -= stain * 25 * severity
+
+    vignette = np.power(edge_decay, 1.8)
+
+    result = cv2.cvtColor(np.clip(lab, 0, 255).astype(np.uint8), cv2.COLOR_LAB2RGB)
+    result = result.astype(np.float32) / 255.0
+
+    result *= vignette[..., None]
+
+    return (np.clip(result, 0, 1) * 255).astype(np.uint8)
 
 def apply_fft_lpf(img, severity=0.5):
-#gubitak ostrine kroz frekv domen
+    # degradacija visokih frekvencija uz lokalni gubitak detalja
+
     h, w, _ = img.shape
     img_f = img.astype(np.float32) / 255.0
-    sigma = 60 - (severity * 50)
-    channels = cv2.split(img_f)
-    new_channels = []
-    for ch in channels:
+
+    sigma = max(5, 22 - severity * 15)
+
+    result_channels = []
+
+    for ch in cv2.split(img_f):
+
         dft = np.fft.fftshift(np.fft.fft2(ch))
-        y, x = np.ogrid[-h // 2:h - h // 2, -w // 2:w - w // 2]
-        mask = np.exp(-(x ** 2 + y ** 2) / (2 * sigma ** 2))
-        filtered = np.abs(np.fft.ifft2(np.fft.ifftshift(dft * mask)))
-        noise = cv2.resize(np.random.rand(8, 8), (w, h), interpolation=cv2.INTER_CUBIC)
-        ch_res = ch * (1 - noise * severity) + filtered * (noise * severity)
-        new_channels.append(ch_res)
-    res = cv2.merge(new_channels)
-    return (np.clip(res, 0, 1) * 255).astype(np.uint8)
+
+        y, x = np.ogrid[-h//2:h-h//2, -w//2:w-w//2]
+        dist2 = x**2 + y**2
+
+        mask = np.exp(-dist2 / (2 * sigma**2))
+
+        filtered = np.real(
+            np.fft.ifft2(
+                np.fft.ifftshift(dft * mask)
+            )
+        )
+
+        # veoma velike nepravilne zone
+        texture = cv2.resize(
+            np.random.rand(4, 4).astype(np.float32),
+            (w, h),
+            interpolation=cv2.INTER_CUBIC
+        )
+
+        texture = cv2.GaussianBlur(texture, (0, 0), 18)
+        texture = cv2.normalize(texture, None, 0, 1, cv2.NORM_MINMAX)
+
+        # samo pojedini delovi slike gube detalje
+        local_mask = np.clip((texture - 0.35) * 2.3, 0, 1)
+
+        degraded = (
+            ch * (1 - local_mask * 0.9)
+            + filtered * (local_mask * 0.9)
+        )
+
+        # dodatni blur samo gde postoji degradacija
+        blur = cv2.GaussianBlur(
+            degraded,
+            (11, 11),
+            2.8 + severity * 2.0
+        )
+
+        degraded = degraded * (1 - local_mask * 0.65) + blur * (local_mask * 0.65)
+
+        # lokalni pad kontrasta
+        mean = cv2.GaussianBlur(degraded, (0, 0), 12)
+
+        degraded = (
+            mean +
+            (degraded - mean) *
+            (0.85 - local_mask * 0.45)
+        )
+
+        # veoma blaga promena osvetljenja
+        illumination = cv2.GaussianBlur(
+            np.random.rand(h, w).astype(np.float32),
+            (0, 0),
+            40
+        )
+
+        illumination = (illumination - 0.5) * 0.10 * severity
+
+        degraded = degraded + illumination
+
+        degraded = np.clip(degraded, 0, 1)
+
+        result_channels.append(degraded)
+
+    result = cv2.merge(result_channels)
+
+    return (result * 255).astype(np.uint8)
 
 
 def apply_cracks(img, severity=0.5):
 #pomocu random walk slg ismulacija pukotina na slici
     h, w, _ = img.shape
     result = img.copy()
+
     num_cracks = int(3 + severity * 12)
 
     for _ in range(num_cracks):
-        x, y = random.randint(0, w - 1), random.randint(0, h - 1)
-        steps = random.randint(int(50 * max(severity, 0.1)), int(200 * max(severity, 0.1)))
+
+        x = random.randint(0, w - 1)
+        y = random.randint(0, h - 1)
+
+        steps = random.randint(
+            int(50 * max(severity, 0.1)),
+            int(200 * max(severity, 0.1))
+        )
+
         direction = random.uniform(0, 2 * np.pi)
 
         points = [(x, y)]
+
         for step in range(steps):
-            direction += random.gauss(0, 0.3)
+
+            direction += random.gauss(0, 0.25)
+
             step_size = random.randint(2, 5)
+
             x = int(x + step_size * np.cos(direction))
             y = int(y + step_size * np.sin(direction))
+
             x = int(np.clip(x, 0, w - 1))
             y = int(np.clip(y, 0, h - 1))
+
             points.append((x, y))
 
-            if random.random() < 0.05 * severity:
+            # manje grananje
+            if random.random() < 0.04 * severity:
+
                 branch_dir = direction + random.choice([-1, 1]) * random.uniform(0.5, 1.2)
+
                 bx, by = x, y
+
                 for _ in range(random.randint(10, 30)):
-                    branch_dir += random.gauss(0, 0.2)
+
+                    branch_dir += random.gauss(0, 0.18)
+
                     bx = int(bx + 3 * np.cos(branch_dir))
                     by = int(by + 3 * np.sin(branch_dir))
+
                     bx = int(np.clip(bx, 0, w - 1))
                     by = int(np.clip(by, 0, h - 1))
-                    cv2.circle(result, (bx, by), 1, (30, 20, 10), -1)
+
+                    cv2.circle(
+                        result,
+                        (bx, by),
+                        1,
+                        (35, 28, 20),
+                        -1
+                    )
 
         for i in range(1, len(points)):
-            thickness = random.choice([1, 2, 3])  
-            darkness = random.randint(20, 60)
-            color = (darkness, max(darkness - 10, 0), max(darkness - 15, 0))
-            cv2.line(result, points[i - 1], points[i], color, thickness)
+
+            thickness = random.choices(
+                [1, 2, 3],
+                weights=[70, 22, 8]
+            )[0]
+
+            darkness = random.randint(18, 55)
+
+            color = (
+                darkness,
+                max(darkness - 6, 0),
+                max(darkness - 10, 0)
+            )
+
+            cv2.line(
+                result,
+                points[i - 1],
+                points[i],
+                color,
+                thickness,
+                cv2.LINE_AA
+            )
+
+            # sitna proširenja duž pukotine
+            if random.random() < 0.30:
+
+                cv2.circle(
+                    result,
+                    points[i],
+                    1,
+                    (
+                        min(darkness + 15, 255),
+                        min(darkness + 10, 255),
+                        min(darkness + 5, 255)
+                    ),
+                    -1
+                )
 
     return result
 
-
 def apply_water_stains(img, severity=0.5):
-#simulacija vodenih mrlja koje se pojavljuju na starim slikama ali ce biti lose vrv jer su same mrlje i tesko da ce biti jako realistican efekat  i priemtan
+    # braon/plave mrlje + blur + tamnjenje + “wet diffusion”
+
     h, w, _ = img.shape
     img_f = img.astype(np.float32) / 255.0
     result = img_f.copy()
-    num_stains = int(2 + severity * 8)
+
+    num_stains = int(2 + severity * 6)
 
     for _ in range(num_stains):
+
         cx = random.randint(0, w - 1)
         cy = random.randint(0, h - 1)
-        radius = random.randint(int(20 + severity * 10), int(50 + severity * 40))
+
+        radius = random.randint(
+            int(40 + severity * 30),
+            int(100 + severity * 80)
+        )
 
         Y, X = np.ogrid[:h, :w]
         dist = np.sqrt((X - cx) ** 2 + (Y - cy) ** 2)
 
-        mask = np.clip(1 - (dist / max(radius, 1)), 0, 1)
-        ring = np.clip(np.abs(dist - radius * 0.7) / max(radius * 0.3, 1), 0, 1)
-        ring = 1 - ring
-        ring *= mask
+        mask = np.clip(1 - dist / radius, 0, 1)
 
+        # organic diffusion inside stain
+        blur_noise = cv2.GaussianBlur(
+            np.random.rand(h, w).astype(np.float32),
+            (0, 0),
+            10
+        )
+
+        mask = mask * (0.6 + 0.8 * blur_noise)
+        mask = cv2.GaussianBlur(mask, (0, 0), 6)
+
+        # 🎨 brown-blue dirty water tone
+        stain_color = np.array([
+            random.uniform(0.25, 0.40),  # R (brownish)
+            random.uniform(0.28, 0.42),  # G
+            random.uniform(0.35, 0.55)   # B (bluish tint)
+        ])
+
+        strength = 0.6 + severity * 0.4
+
+        # darken + tint + blur effect
         for c in range(3):
-            stain_color = [0.85, 0.80, 0.65][c]
-            result[:, :, c] = result[:, :, c] * (1 - ring * 0.3 * severity) + \
-                              stain_color * ring * 0.15 * severity
+            result[:, :, c] = (
+                result[:, :, c] * (1 - mask * strength)
+                + stain_color[c] * mask * strength
+            )
+
+        # extra dark center (wet pooling)
+        result -= mask[..., None] * 0.08 * severity
+
+    # final wet blur
+    result = cv2.GaussianBlur(result, (7, 7), 1.2)
 
     return (np.clip(result, 0, 1) * 255).astype(np.uint8)
-
 
 def apply_paint_flaking(img, severity=0.5):
 #simulaciaj ljutšenja boje i kao da se planto ispod otkriva
@@ -314,7 +544,7 @@ def build_balanced_dataset(source_dir, output_dir, target_size=(224, 224), desc_
         selected_filters = random.sample(damage_functions, 6)
 
         for i, damage_func in enumerate(selected_filters):
-            random_severity = random.uniform(0.2, 0.8)
+            random_severity = random.uniform(0.5, 1.0)
             source_img = img if i < 3 else img_flipped
             suffix = "orig" if i < 3 else "flip"
 
@@ -430,7 +660,7 @@ def pokreni_ceo_proces(izvorni_dir, izlazna_baza, prosek_treninga=0.8):
 
 
 if __name__ == '__main__':
-    izvorni_test_folder = r"C:\Users\PC\gitara\slike.projekat\test" 
+    izvorni_test_folder = r"C:\Users\PC\gitara\slike.projekat\data" 
     baza_izlaznih_foldera = r"C:\Users\PC\gitara\slike.projekat"
 
     pokreni_ceo_proces(
