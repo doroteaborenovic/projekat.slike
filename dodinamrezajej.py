@@ -1,5 +1,5 @@
-#ovo je prva arhitektura za klasifikaciju da li je oštećenja slika ili ne
-#ovo je ona gde je uradjeno 142 epohe
+#OVA JE DO SAD NAJBOLJA I OVU CUVAJ
+
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -11,14 +11,14 @@ import os
 import time
 import numpy as np
 import warnings
-from sklearn.metrics import f1_score  
+from sklearn.metrics import f1_score
 
 warnings.filterwarnings('ignore')
 
 class RecursiveDenseMicroBlock(nn.Module):
     """
     Mikro-blok koji rekurzivno primenjuje istu konvoluciju više puta.
-    Rezultati svih rekurzija se spajaju (konkateniraju) po kanalima 
+    Rezultati svih rekurzija se spajaju (konkateniraju) po kanalima
     i na kraju redukuju 1x1 konvolucijom na početni broj kanala.
     """
     def __init__(self, channels: int, num_recursions: int = 3):
@@ -71,15 +71,15 @@ class SpectralDecomposeBlock(nn.Module):
         )
         # Visoka frekvencija je razlika originalnog signala i niske frekvencije
         high = x - low
-        
+
         # obrada obe komponente kroz zasebne konvolucione slojeve
         low_feat = self.low_conv(low)
         high_feat = self.high_conv(high)
-        
+
         # izračunavanje težinskih koeficijenata (skalara) preko "gate" mehanizma
         concat = torch.cat([low_feat, high_feat], dim=1)
         w = self.gate(concat)
-        
+
         # Kombinovanje komponenti pomoću dobijenih težina i fuzija sa početnim ulazom
         fused = w[:, 0:1] * low_feat + w[:, 1:2] * high_feat
         return self.fuse(torch.cat([fused, x], dim=1))
@@ -170,7 +170,7 @@ class GatedFusionBlock(nn.Module):
         # Spajanje i računanje pažnje (atention/gate koeficijenata) za oba ulaza
         combined = torch.cat([s, sp], dim=1)
         gates = self.gate(combined).view(combined.shape[0], -1, 1, 1)
-        
+
         out_ch = s.shape[1]
         s_gate = gates[:, :out_ch]   # Kapija za prostorne podatke
         sp_gate = gates[:, out_ch:]  # Kapija za spektralne podatke
@@ -264,7 +264,7 @@ class DodinaMreza(nn.Module):
     def forward(self, x: Tensor) -> dict[str, Tensor]:
         # Prolaz kroz prostornu granu (uzimaju se i preskočene konekcije)
         s1, s1_skip = self.spatial_block1(x)
-        s2, s2_skip = self.spatial_block2(s1)  
+        s2, s2_skip = self.spatial_block2(s1)
         s3, s3_skip = self.spatial_block3(s2)
 
         # Prolaz kroz spektralnu granu uz promene rezolucije i projekcije kanala
@@ -277,7 +277,7 @@ class DodinaMreza(nn.Module):
 
         # Unakrsno spajanje karakteristika preko asimetričnih mostova
         c1 = self.cross1(s1_skip, sp1)
-        c2 = self.cross2(s2_skip, sp2)        
+        c2 = self.cross2(s2_skip, sp2)
         c3 = self.cross3(s3_skip, sp3)
 
         # Obogaćivanje prostorne mape sa informacijama iz trećeg mosta
@@ -317,7 +317,7 @@ class DodinaMrezaLoss(nn.Module):
         device = outputs['logits'].device
         # Dodavanje veće težine oštećenoj klasi (indeks 1) zbog potencijalnog debalansa u podacima
         weights = torch.tensor([1.0, self.weight_damaged], device=device)
-        
+
         # 1. Gubitak klasifikacije
         cls_loss = F.cross_entropy(outputs['logits'], labels, weight=weights)
 
@@ -390,7 +390,7 @@ def train_dodina_mreza(
     dataset_dir: str,
     epochs_to_train: int = 30,  # Podešeno na 30 dodatnih epoha (nastavlja se trening)
     batch_size: int = 32,
-    lr: float = 7e-5,          
+    lr: float = 7e-5,
     img_size: int = 128,
     val_split: float = 0.2,
     save_dir: str = '.',
@@ -463,7 +463,7 @@ def train_dodina_mreza(
     start_epoch = 0
     best_val_acc = 0.0
     best_threshold = 0.5
-    
+
     # POPRAVLJENO: Učitavanje i bezbedno upisivanje modela na Drive
     checkpoint_path = os.path.join(save_dir, 'dodinamrezajej.pth')
     local_checkpoint_path = '/content/dodinamrezajej_temp.pth'
@@ -482,7 +482,7 @@ def train_dodina_mreza(
     if resume and os.path.exists(checkpoint_path):
         print(f"\nPronađen sačuvan model na putanji: {checkpoint_path}")
         model.load_state_dict(checkpoint['model_state_dict'])
-        
+
         if 'optimizer_state_dict' in checkpoint:
             try:
                 optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
@@ -530,7 +530,7 @@ def train_dodina_mreza(
 
         train_loss = running_loss / len(train_loader)
         train_acc = 100.0 * correct / total
-        
+
         # VALIDACIONA FAZA
         model.eval()
         val_loss = 0.0
@@ -547,7 +547,7 @@ def train_dodina_mreza(
                 outputs = model(images)
                 losses = criterion(outputs, labels)
                 val_loss += losses['total'].item()
-                
+
                 # 3-way Test-Time Augmentation (TTA):
                 probs_orig = F.softmax(outputs['logits'], dim=-1)
 
@@ -567,13 +567,13 @@ def train_dodina_mreza(
                 val_labels_list.extend(labels.cpu().numpy())
 
         val_loss /= len(val_loader)
-        
+
         val_probs_arr = np.array(val_probs)
         val_labels_arr = np.array(val_labels_list)
         best_t_epoch = 0.5
         best_f1_epoch = 0.0
 
-        # Dinamička pretraga klasifikacionog praga (threshold) od 0.1 do 0.9 sa korakom 0.01 
+        # Dinamička pretraga klasifikacionog praga (threshold) od 0.1 do 0.9 sa korakom 0.01
         for t in np.arange(0.1, 0.9, 0.01):
             preds = (val_probs_arr >= t).astype(int)
             f1 = f1_score(val_labels_arr, preds)
@@ -586,7 +586,7 @@ def train_dodina_mreza(
         val_correct = np.sum(val_preds_opt == val_labels_arr)
         val_total = len(val_labels_arr)
         val_acc = 100.0 * val_correct / val_total
-        
+
         # Ažuriranje koraka za learning rate scheduler
         scheduler.step()
 
@@ -646,15 +646,15 @@ if __name__ == '__main__':
     drive_dataset_path = "/content/drive/MyDrive/Projekat_Model/DATASET_TRENING"
     drive_zip_path = "/content/drive/MyDrive/Projekat_Model/DATASET_TRENING.zip"
     local_dataset_path = "/content/DATASET_TRENING"
-    
+
     from google.colab import drive
     if not os.path.exists("/content/drive"):
         drive.mount('/content/drive')
-        
+
     # POPRAVLJENO: Provera validnosti lokalnog skupa pre nego što preskočimo pripremu
     dataset_ready = (
-        os.path.exists(local_dataset_path) and 
-        os.path.exists(os.path.join(local_dataset_path, "0")) and 
+        os.path.exists(local_dataset_path) and
+        os.path.exists(os.path.join(local_dataset_path, "0")) and
         os.path.exists(os.path.join(local_dataset_path, "1"))
     )
 
@@ -670,7 +670,7 @@ if __name__ == '__main__':
             # Pokretanje bash komande za tiho otpakivanje zip arhive u /content/
             get_ipython().system(f'unzip -q "{drive_zip_path}" -d "/content/"')
             print("otpakivanje uspešno završeno")
-            
+
             # --- SAMOISCELJUJUĆA LOGIKA ZA RAZLIČITE STRUKTURE ZIP-A ---
             # Slučaj A: Ako su folderi '0' i '1' ispali direktno u /content/
             if os.path.exists("/content/0") and os.path.exists("/content/1"):
@@ -679,7 +679,7 @@ if __name__ == '__main__':
                 shutil.move("/content/0", os.path.join(local_dataset_path, "0"))
                 shutil.move("/content/1", os.path.join(local_dataset_path, "1"))
                 print("Sređene putanje: Folderi 0 i 1 su uspešno premešteni u /content/DATASET_TRENING/")
-                
+
             # Slučaj B: Ako je zip napravio dvostruki DATASET_TRENING folder
             elif os.path.exists(os.path.join(local_dataset_path, "DATASET_TRENING")):
                 import shutil
@@ -691,7 +691,7 @@ if __name__ == '__main__':
                     shutil.move(sub_1, os.path.join(local_dataset_path, "1"))
                 shutil.rmtree(os.path.join(local_dataset_path, "DATASET_TRENING"))
                 print("Sređene putanje: Sadržaj izvučen iz dvostrukog DATASET_TRENING foldera.")
-                
+
         elif os.path.exists(drive_dataset_path):
             print("Nema .zip fajla, kopiram ceo direktorijum sa Google Drive-a")
             get_ipython().system(f'cp -r "{drive_dataset_path}" "/content/"')
@@ -704,9 +704,9 @@ if __name__ == '__main__':
     # Pokretanje nastavka treninga modela
     model, history = train_dodina_mreza(
         dataset_dir=local_dataset_path,
-        epochs_to_train=30, 
+        epochs_to_train=20,
         batch_size=32,
-        lr=7e-5,            
+        lr=7e-5,
         img_size=128,
         val_split=0.2,
         save_dir="/content/drive/MyDrive/Projekat_Model",
