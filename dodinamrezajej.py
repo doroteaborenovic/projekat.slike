@@ -1,5 +1,5 @@
 #ovo je prva arhitektura za klasifikaciju da li je oštećenja slika ili ne
-#ovo je ona gde je uradjeno 142 epohe
+#ovo je ona gde je uradjeno 75 epoha na datasetu sa dobrim slokama i dobila se tracmnost na testu od 99% tkd wii
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -16,11 +16,9 @@ from sklearn.metrics import f1_score
 warnings.filterwarnings('ignore')
 
 class RecursiveDenseMicroBlock(nn.Module):
-    """
-    Mikro-blok koji rekurzivno primenjuje istu konvoluciju više puta.
-    Rezultati svih rekurzija se spajaju (konkateniraju) po kanalima
-    i na kraju redukuju 1x1 konvolucijom na početni broj kanala.
-    """
+    #Mikro-blok koji rekurzivno primenjuje istu konvoluciju vi[e puta. na kraju se svi reyultati rekutzija spajaju po kanalima 
+    # na kraju redukuju 1x1 konvolucijom na početni broj kanala.
+    
     def __init__(self, channels: int, num_recursions: int = 3):
         super().__init__()
         self.num_recursions = num_recursions
@@ -31,7 +29,7 @@ class RecursiveDenseMicroBlock(nn.Module):
     def forward(self, x: Tensor) -> Tensor:
         outputs = []
         out = x
-        # Prolazak kroz definisan broj rekurzija uz dodavanje rezidulanog (skip) spoja
+        # prolazak kroz definisan broj rekurzija uz dodavanje rezidulanog (skip) spoja
         for i in range(self.num_recursions):
             out = F.relu(self.bn(self.conv(out)) + x)
             outputs.append(out)
