@@ -1,5 +1,5 @@
-#OVA JE DO SAD NAJBOLJA I OVU CUVAJ
-
+#ovo je prva arhitektura za klasifikaciju da li je oštećenja slika ili ne
+#ovo je ona gde je uradjeno 142 epohe
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
