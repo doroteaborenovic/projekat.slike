@@ -501,7 +501,6 @@ def evaluiraj_dodinu_mrezu_sa_detaljnim_klasama(model_path: str, test_dataset_di
 
     results_dir = os.path.dirname(model_path)
     
-    # POPRAVLJENO: Automatsko pronalazenje sledeceg slobodnog indeksa (tabela_1, tabela_2, ...)
     # Ovo ti garantuje da se prethodno sacuvani podaci nikada nece prebrisati!
     idx = 1
     while os.path.exists(os.path.join(results_dir, f"tabela_{idx}.csv")):
@@ -512,7 +511,6 @@ def evaluiraj_dodinu_mrezu_sa_detaljnim_klasama(model_path: str, test_dataset_di
     df_stats.to_csv(csv_path, index=False, encoding="utf-8-sig")
     print(f"\nTabela rezultata uspesno sacuvana pod nazivom:\n{csv_path}")
 
-    # POPRAVLJENO: classification_report se sada cuva kao izvestaj_klasifikacije_{idx}.txt
     report_path = os.path.join(results_dir, f"izvestaj_klasifikacije_{idx}.txt")
     with open(report_path, "w", encoding="utf-8") as f:
         f.write(report)
@@ -543,7 +541,6 @@ def evaluiraj_dodinu_mrezu_sa_detaljnim_klasama(model_path: str, test_dataset_di
     plt.ylabel('Stvarno (Tacna oznaka)')
     plt.title('Matrica konfuzije (Dodina Mreza)')
     
-    # POPRAVLJENO: Matrica konfuzije se sada cuva kao matrica_konfuzije_{idx}.png
     cm_path = os.path.join(results_dir, f"matrica_konfuzije_{idx}.png")
     plt.savefig(cm_path, dpi=300, bbox_inches="tight")
     print(f"Matrica konfuzije sacuvana na:\n{cm_path}\n")
