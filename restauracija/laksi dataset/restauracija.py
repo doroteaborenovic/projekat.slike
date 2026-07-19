@@ -23,9 +23,7 @@ logging.disable(logging.CRITICAL)
 os.environ["PYTHONWARNINGS"] = "ignore"
 torch.backends.cudnn.benchmark = True
 
-# =====================================================================
-# GLOBALNO DEFINISANI BAZIČNI BLOKOVI (Dostupni svim modelima na vrhu)
-# =====================================================================
+
 class DepthwiseSeparableConv2d(nn.Module):
     def __init__(self, in_ch: int, out_ch: int, kernel_size: int = 3, padding: int = 1, dilation: int = 1):
         super().__init__()
@@ -36,7 +34,7 @@ class DepthwiseSeparableConv2d(nn.Module):
         return self.pointwise(self.depthwise(x))
 
 
-# Definisano mapiranje 9 oštećenja na klase 1-9 za potrebe analize imena fajla
+# ostecenja i gde treba 
 DAMAGE_MAP = {
     'apply_anisotropic_diffusion': 1,  # Vlaga i gubitak detalja (Potreban CCR)
     'apply_mold_and_decay': 2,         # Buđ i biološka degradacija
@@ -571,7 +569,7 @@ class ContrastColorRecovery(nn.Module):
         return torch.clamp(input_img + adjusted, 0.0, 1.0)
 
 
-# --- GLAVNI MODEL RESTAURACIJE (SA USLOVNIM CCR I ISPRAVLJENIM s4 POOLINGOM) ---
+# glavni deo modela restauracije
 class Restauracija(nn.Module):
     def __init__(self, in_channels: int = 3, out_channels: int = 3, base_ch: int = 32):
         super().__init__()
@@ -612,14 +610,14 @@ class Restauracija(nn.Module):
         self.skip_refine3 = nn.Sequential(RecursiveDenseRestorationBlock(base_ch * 4, num_recursions=2), SpectralDecompositionRestorationBlock(base_ch * 4))
         self.skip_refine4 = nn.Sequential(RecursiveDenseRestorationBlock(base_ch * 8, num_recursions=2), SpectralDecompositionRestorationBlock(base_ch * 8))
 
-        # Pomoćne AUX grane
+        # Pomoćne AUX grane (  model, pored svog glavnog cilja, trenira da rešava i sekundarne, pomoćne zadatke)
         self.aux_head3 = nn.Sequential(nn.Conv2d(base_ch * 2, base_ch, 3, padding=1, bias=False), nn.ReLU(inplace=False), nn.Conv2d(base_ch, out_channels, 3, padding=1, bias=False))
         self.aux_head2 = nn.Sequential(nn.Conv2d(base_ch, base_ch // 2, 3, padding=1, bias=False), nn.ReLU(inplace=False), nn.Conv2d(base_ch // 2, out_channels, 3, padding=1))
 
         self.final_refinement = nn.Sequential(RecursiveDenseRestorationBlock(base_ch, num_recursions=2), SpectralDecompositionRestorationBlock(base_ch), RecursiveDenseRestorationBlock(base_ch, num_recursions=2))
         self.output_head = nn.Sequential(nn.Conv2d(base_ch, base_ch // 2, 3, padding=1, bias=False), nn.ReLU(inplace=False), nn.Conv2d(base_ch // 2, out_channels, 3, padding=1))
 
-        # Dinamički blok za boje
+        # dinamicki blok ya bojee
         self.contrast_color_recovery = ContrastColorRecovery(base_ch, out_channels)
 
     def forward(self, x: Tensor, use_ccr: Tensor | bool = True) -> Tensor | dict[str, Tensor]:
@@ -627,7 +625,7 @@ class Restauracija(nn.Module):
         s1, s1_skip = self.spatial_block1(x)
         s2, s2_skip = self.spatial_block2(s1)
         s3, s3_skip = self.spatial_block3(s2)
-        s4, s4_skip = self.spatial_block4(s3) # Vraćeno na ispravan s4 za stabilno i dokazano poklapanje slojeva
+        s4, s4_skip = self.spatial_block4(s3) #  s4 za stabilno i dokazano poklapanje slojeva
         sp1 = self.spectral_block1(self.spectral_init(x))
         sp1_p = self.spec_proj1(self.spectral_pool1(sp1))
         sp2 = self.spectral_block2(sp1_p)
@@ -696,7 +694,7 @@ class RestorationDataset(Dataset):
         folder_0 = os.path.join(dataset_dir, '0')
         folder_1 = os.path.join(dataset_dir, '1')
         if not os.path.exists(folder_0) or not os.path.exists(folder_1):
-            raise FileNotFoundError(f"Folderi '0' i/ili '1' ne postoje na putanji {dataset_dir}!")
+            raise FileNotFoundError(f"nema 0 i 1 foldera na putanji {dataset_dir}!")
 
         dmg_files = sorted([f for f in os.listdir(folder_1) if f.lower().endswith(('.png', '.jpg', '.jpeg', '.bmp', '.tiff'))])
         self.pairs = []
@@ -720,7 +718,7 @@ class RestorationDataset(Dataset):
 
         self.cached_pairs = []
         if self.preload_to_ram and len(self.pairs) > 0:
-            print(f"[Dataset] Učitavanje {len(self.pairs)} parova za restauraciju u RAM...")
+            print(f"[Dataset] ucitavanje {len(self.pairs)} parova za restauracijicu")
             for deg_path, clean_path in self.pairs:
                 deg_img = Image.open(deg_path).convert('RGB').resize((img_size, img_size), Image.Resampling.BILINEAR)
                 clean_img = Image.open(clean_path).convert('RGB').resize((img_size, img_size), Image.Resampling.BILINEAR)
@@ -749,7 +747,7 @@ class RestorationDataset(Dataset):
             if k > 0:
                 deg_t, clean_t = torch.rot90(deg_t, k=k, dims=[1, 2]), torch.rot90(clean_t, k=k, dims=[1, 2])
 
-            # NOVO: Sinhronizovane kolor i kontrast augmentacije
+            # sinhronizovane kolor i kontrast augmentacije
             if torch.rand(1) > 0.5:
                 brightness_factor = random.uniform(0.85, 1.15)
                 contrast_factor = random.uniform(0.85, 1.15)
@@ -770,9 +768,7 @@ class RestorationDataset(Dataset):
         return len(self.pairs)
 
 
-# =====================================================================
-# 6. GUBICI ZA MODEL RESTAURACIJE (LAGANI I STABILNI)
-# =====================================================================
+# gubici za model restauracije 
 class SSIMLoss(nn.Module):
     def __init__(self, window_size: int = 11):
         super().__init__()
@@ -968,7 +964,7 @@ def evaluiraj_dodinu_mrezu_sa_detaljnim_klasama(
 
     test_loader = DataLoader(test_dataset, batch_size=batch_size, shuffle=False, num_workers=2, pin_memory=True)
 
-    # Inicijalizacija mreže za tačno 2 KLASE (binarni klasifikator)
+    # klasifikator
     model = DodinaMreza(num_classes=2).to(device)
 
     if not os.path.exists(model_path):
@@ -1004,7 +1000,7 @@ def evaluiraj_dodinu_mrezu_sa_detaljnim_klasama(
     stats = {name: {'total': 0, 'correct': 0} for name in damage_names.values()}
     stats['Bez ostecenja (Ciste slike)'] = {'total': 0, 'correct': 0}
 
-    print("Pokrećem Vašu 5-way Test-Time Augmentaciju...")
+    print("pokretanje") #jako bitno naglasiti da ima taj TTA ako je problem maknucu
     with torch.no_grad():
         for images, labels, paths in test_loader:
             images = images.to(device)
@@ -1087,15 +1083,13 @@ def evaluiraj_dodinu_mrezu_sa_detaljnim_klasama(
                 yticklabels=['Bez ostecenja', 'Osteceno'])
     plt.xlabel('Predviđeno')
     plt.ylabel('Stvarno')
-    plt.title('Matrica konfuzije (Dodina Mreza sa TTA)')
+    plt.title('Matrica konfuzije')
     plt.show()
 
     return df_stats
 
 
-# =====================================================================
-# 8. TRENING ZA RESTAURACIJU (SA INTEGRISANIM OPTIMIZACIJAMA I NAZIVIMA)
-# =====================================================================
+# trening sa tacnim nazivima
 def train_restauracija(
     dataset_dir: str,
     epochs_to_train: int = 30,
@@ -1122,7 +1116,7 @@ def train_restauracija(
     start_epoch = 0
     best_psnr = 0.0
 
-    # KORISTE SE TAČNI NAZIVI KOJE STE TRAŽILI:
+    # KORISTE SE TAČNI NAZIVI 
     checkpoint_path = os.path.join(save_dir, 'dodinarestauracijajej.pth')
     best_checkpoint_path = os.path.join(save_dir, 'dodinarestauracijabest.pth')
 
@@ -1207,7 +1201,7 @@ def train_restauracija(
             'best_psnr': best_psnr,
         }, checkpoint_path)
 
-        # Čuvanje najboljeg modela na drajvu
+        # ovde se cuva najbolji model da bi se sa njim radila evaaluacija
         if avg_psnr > best_psnr:
             best_psnr = avg_psnr
             torch.save({
@@ -1226,55 +1220,50 @@ if __name__ == '__main__':
     klasifikator_path = os.path.join(save_dir, "dodinamrezajej.pth")
     restauracija_path = os.path.join(save_dir, "dodinarestauracijajej.pth")
 
-    # 🔥 IZMENA: Nove putanje za ZIP arhive na Google Drive-u
+    # putanjice ali za drajv NE ZA KLASTER
     drive_trening_zip = "/content/drive/MyDrive/Projekat_Model/trening.zip"
     drive_test_zip = "/content/drive/MyDrive/Projekat_Model/test.zip"
 
-    # Lokalne putanje u virtuelnom okruženju Colab-a (za maksimalnu brzinu učitavanja)
+    # putanjice pt2
     lokalni_trening_path = "/content/trening"
     lokalni_test_path = "/content/test"
 
-    # =====================================================================
-    # PRIPREMA TEST DATASETA (Otpatkivanje ZIP-a ili fallback na folder sa drajva)
-    # =====================================================================
+    # sredjivanje test dataseta
     if not os.path.exists(lokalni_test_path):
         if os.path.exists(drive_test_zip):
-            print(f"Priprema testnog skupa: otpakujem {drive_test_zip} u {lokalni_test_path}...")
+            print(f"otpakivanje {drive_test_zip} u {lokalni_test_path}...")
             get_ipython().system(f'unzip -q "{drive_test_zip}" -d "{lokalni_test_path}"')
-            print("Testni skup uspešno otpakovan lokalno.")
+            print("gotojo otpakivanje")
         elif os.path.exists("/content/drive/MyDrive/Projekat_Model/test"):
-            print("ZIP arhiva za test nije pronađena na drajvu. Koristim direktan folder sa Google Drive-a...")
+            print("nema zipa pa se trazi dalje")
             lokalni_test_path = "/content/drive/MyDrive/Projekat_Model/test"
         else:
-            print("[Upozorenje] Test skup nije pronađen ni kao ZIP ni kao raspakovan folder na Google Drive-u!")
+            print("nema dataseta nigde")
 
-    # =====================================================================
-    # PRIPREMA TRENING DATASETA (Otpatkivanje ZIP-a ili fallback na folder sa drajva)
-    # =====================================================================
+    # sredjivanje trening dataseta
     if not os.path.exists(lokalni_trening_path):
         if os.path.exists(drive_trening_zip):
-            print(f"Priprema trening skupa: otpakujem {drive_trening_zip} u {lokalni_trening_path}...")
+            print(f"otpakivanje {drive_trening_zip} u {lokalni_trening_path}...")
             get_ipython().system(f'unzip -q "{drive_trening_zip}" -d "{lokalni_trening_path}"')
-            print("Trening skup uspešno otpakovan lokalno.")
+            print("gotojo otpakivanje")
         elif os.path.exists("/content/drive/MyDrive/Projekat_Model/trening"):
-            print("ZIP arhiva za trening nije pronađena na drajvu. Koristim direktan folder sa Google Drive-a...")
+            print("nema zipa pa se trazi dalje")
             lokalni_trening_path = "/content/drive/MyDrive/Projekat_Model/trening"
         else:
-            print("[Upozorenje] Trening skup nije pronađen ni kao ZIP ni kao raspakovan folder na Google Drive-u!")
+            print("nema dataseta nigde")
 
-    # =====================================================================
-    # KORAK A: Isključivo učitavanje i evaluacija Vašeg gotovog klasifikatora
-    # (Sistem za keširanje sprečava ponovnu evaluaciju)
-    # =====================================================================
+    
+    # ucitavanje klasifikacije
+   
     classifier_cache_path = os.path.join(save_dir, 'classifier_evaluation_cache.csv')
 
-    print(f"\n[KLASIFIKACIJA] Provera keširanih rezultata...")
+    print(f"\nprovera za klasifikaciju ")
     if os.path.exists(classifier_cache_path):
-        print("Pronađeni keširani rezultati. Učitavam tabelu umesto ponovne evaluacije.")
+        print("nadjena je odradjena klasifiakcija")
         stats_df = pd.read_csv(classifier_cache_path)
         print(stats_df.to_string(index=False))
     else:
-        print("Keširani rezultati nisu pronađeni. Pokrećem evaluaciju klasifikatora...")
+        print("nema vec uradjene kalsifiakcije, idemo ispocetka")
         stats_df = evaluiraj_dodinu_mrezu_sa_detaljnim_klasama(
             model_path=klasifikator_path,
             test_dataset_dir=lokalni_test_path,
@@ -1288,19 +1277,17 @@ if __name__ == '__main__':
             print(f"Rezultati evaluacije sačuvani u keš fajl: {classifier_cache_path}")
 
 
-    # =====================================================================
-    # KORAK B: Pokretanje treninga za novi model restauracije
-    # =====================================================================
+    # pokretanje treningaaa
     print(f"\n[RESTAURACIJA] Pokrećem trening modela {restauracija_path}...")
     if os.path.exists(lokalni_trening_path):
         restoracioni_model = train_restauracija(
             dataset_dir=lokalni_trening_path,
-            epochs_to_train=30,
+            epochs_to_train=24,
             batch_size=4,
             lr=2e-4,
             img_size=192,
             save_dir=save_dir,
-            resume=True # FALSE da trening krene ispočetka, TRUE da nastavi od poslednjeg checkpoint-a
+            resume=True # ako je false trening ide ispocetka a ko je true odna se nastavljaaa
         )
     else:
         print(f"[Greška] Trening dataset nije pronađen na putanji: {lokalni_trening_path}")
