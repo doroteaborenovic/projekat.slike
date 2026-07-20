@@ -1,4 +1,5 @@
 # treba da se doda jos metrika da se može napraviti jača diskusija al treba da ih nađem :3
+#ovo je bez tta
 from google.colab import drive
 import os
 import zipfile
