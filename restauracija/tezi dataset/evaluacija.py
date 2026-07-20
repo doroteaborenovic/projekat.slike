@@ -1,5 +1,4 @@
 # treba da se doda jos metrika da se može napraviti jača diskusija al treba da ih nađem :3
-#ovo je bez tta
 from google.colab import drive
 import os
 import zipfile
@@ -22,7 +21,7 @@ drive.mount('/content/drive')
 # Definisanje novih putanja na drajvu i lokalno
 zip_path = '/content/drive/MyDrive/Projekat_Model/DATASET_TEST.zip'
 model_path = '/content/drive/MyDrive/Projekat_Model/doroteinarestauracijabest.pth'
-output_dir = '/content/drive/MyDrive/Projekat_Model/RESTAURISANE_SLIKE'
+output_dir = '/content/drive/MyDrive/Projekat_Model/restauracijaslika'
 
 local_extract_path = '/content/test'
 
@@ -440,7 +439,7 @@ def pokreni_evaluaciju():
     print(f"Uređaj za evaluaciju: {device}")
 
     # Kreiranje foldera za rezultate na drajvu
-    pojedinacne_dir = os.path.join(output_dir, 'pojedinacne')
+    pojedinacne_dir = os.path.join(output_dir, 'same_slike')
     poredjenja_dir = os.path.join(output_dir, 'poredjenja')
     os.makedirs(pojedinacne_dir, exist_ok=True)
     os.makedirs(poredjenja_dir, exist_ok=True)
