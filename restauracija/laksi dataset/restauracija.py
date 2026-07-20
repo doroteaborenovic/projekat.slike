@@ -34,7 +34,7 @@ class DepthwiseSeparableConv2d(nn.Module):
         return self.pointwise(self.depthwise(x))
 
 
-# ostecenja i gde treba 
+# ostecenja i gde treba
 DAMAGE_MAP = {
     'apply_anisotropic_diffusion': 1,  # Vlaga i gubitak detalja (Potreban CCR)
     'apply_mold_and_decay': 2,         # Buđ i biološka degradacija
@@ -682,9 +682,7 @@ class Restauracija(nn.Module):
         return out
 
 
-# ============================================================
-# 5. STRUKTURIRANI SKUP PODATAKA ZA RESTAURACIJU
-# ============================================================
+# skup za restauraciju jej
 class RestorationDataset(Dataset):
     def __init__(self, dataset_dir: str, img_size: int = 192, train: bool = True, preload_to_ram: bool = True):
         self.img_size = img_size
@@ -768,7 +766,7 @@ class RestorationDataset(Dataset):
         return len(self.pairs)
 
 
-# gubici za model restauracije 
+# gubici za model restauracije
 class SSIMLoss(nn.Module):
     def __init__(self, window_size: int = 11):
         super().__init__()
@@ -1033,7 +1031,7 @@ def evaluiraj_dodinu_mrezu_sa_detaljnim_klasama(
             best_f1 = f1
             best_threshold = t
 
-    print(f"Optimalni prag pronađen na osnovu F1 kalibracije: {best_threshold:.2f}")
+    print(f"Optimalni prag {best_threshold:.2f}")
 
     all_preds = (all_probs >= best_threshold).astype(int)
 
@@ -1116,7 +1114,7 @@ def train_restauracija(
     start_epoch = 0
     best_psnr = 0.0
 
-    # KORISTE SE TAČNI NAZIVI 
+    # KORISTE SE TAČNI NAZIVI
     checkpoint_path = os.path.join(save_dir, 'dodinarestauracijajej.pth')
     best_checkpoint_path = os.path.join(save_dir, 'dodinarestauracijabest.pth')
 
@@ -1128,9 +1126,9 @@ def train_restauracija(
         for param_group in optimizer.param_groups:
             param_group['lr'] = 5e-5
         scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=epochs_to_train, eta_min=1e-6)
-        print(f"[Resume] Nastavljamo trening Restauracije od epohe {start_epoch+1}. Najbolji zabeleženi PSNR: {best_psnr:.2f} dB")
+        print(f"nastavak od epohe {start_epoch+1}. Najbolji zrezultat za PSNR: {best_psnr:.2f} dB")
     else:
-        print("[Trening] Započinjem trening modela restauracije OD NULE (bez resume).")
+        print("restauracija ide od nule iliti nema sacuvanom modela na toj putanji ")
 
     # Akumulacija gradijenata (Simulacija stabilnosti većeg batch size-a od 12)
     accumulation_steps = 3
@@ -1209,7 +1207,7 @@ def train_restauracija(
                 'model_state_dict': model.state_dict(),
                 'best_psnr': best_psnr,
             }, best_checkpoint_path)
-            print(f"  ★ Novi najbolji rezultat sačuvan u {best_checkpoint_path} (PSNR: {best_psnr:.2f} dB)")
+            print(f"  ★ Novi najbolji u {best_checkpoint_path} (PSNR: {best_psnr:.2f} dB)")
 
     return model
 
@@ -1233,7 +1231,7 @@ if __name__ == '__main__':
         if os.path.exists(drive_test_zip):
             print(f"otpakivanje {drive_test_zip} u {lokalni_test_path}...")
             get_ipython().system(f'unzip -q "{drive_test_zip}" -d "{lokalni_test_path}"')
-            print("gotojo otpakivanje")
+            print("gotojooo otpakivanje")
         elif os.path.exists("/content/drive/MyDrive/Projekat_Model/test"):
             print("nema zipa pa se trazi dalje")
             lokalni_test_path = "/content/drive/MyDrive/Projekat_Model/test"
@@ -1245,16 +1243,16 @@ if __name__ == '__main__':
         if os.path.exists(drive_trening_zip):
             print(f"otpakivanje {drive_trening_zip} u {lokalni_trening_path}...")
             get_ipython().system(f'unzip -q "{drive_trening_zip}" -d "{lokalni_trening_path}"')
-            print("gotojo otpakivanje")
+            print("gotojooo otpakivanje")
         elif os.path.exists("/content/drive/MyDrive/Projekat_Model/trening"):
             print("nema zipa pa se trazi dalje")
             lokalni_trening_path = "/content/drive/MyDrive/Projekat_Model/trening"
         else:
             print("nema dataseta nigde")
 
-    
+
     # ucitavanje klasifikacije
-   
+
     classifier_cache_path = os.path.join(save_dir, 'classifier_evaluation_cache.csv')
 
     print(f"\nprovera za klasifikaciju ")
@@ -1263,7 +1261,7 @@ if __name__ == '__main__':
         stats_df = pd.read_csv(classifier_cache_path)
         print(stats_df.to_string(index=False))
     else:
-        print("nema vec uradjene kalsifiakcije, idemo ispocetka")
+        print("nema vec uradjene kalsifiakcije, ajmooo ispocetka")
         stats_df = evaluiraj_dodinu_mrezu_sa_detaljnim_klasama(
             model_path=klasifikator_path,
             test_dataset_dir=lokalni_test_path,
@@ -1274,15 +1272,15 @@ if __name__ == '__main__':
         )
         if stats_df is not None:
             stats_df.to_csv(classifier_cache_path, index=False)
-            print(f"Rezultati evaluacije sačuvani u keš fajl: {classifier_cache_path}")
+            print(f"Rezultati evaluacije sačuvani u  {classifier_cache_path}")
 
 
     # pokretanje treningaaa
-    print(f"\n[RESTAURACIJA] Pokrećem trening modela {restauracija_path}...")
+    print(f"\npokretanje treninga ovog modela  {restauracija_path}...")
     if os.path.exists(lokalni_trening_path):
         restoracioni_model = train_restauracija(
             dataset_dir=lokalni_trening_path,
-            epochs_to_train=24,
+            epochs_to_train=15,
             batch_size=4,
             lr=2e-4,
             img_size=192,
@@ -1290,4 +1288,4 @@ if __name__ == '__main__':
             resume=True # ako je false trening ide ispocetka a ko je true odna se nastavljaaa
         )
     else:
-        print(f"[Greška] Trening dataset nije pronađen na putanji: {lokalni_trening_path}")
+        print(f"nema dataseta na putanji {lokalni_trening_path}")
