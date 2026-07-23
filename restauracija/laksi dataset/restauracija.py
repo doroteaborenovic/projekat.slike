@@ -34,291 +34,6 @@ class DepthwiseSeparableConv2d(nn.Module):
         return self.pointwise(self.depthwise(x))
 
 
-# ostecenja i gde treba
-DAMAGE_MAP = {
-    'apply_anisotropic_diffusion': 1,  # Vlaga i gubitak detalja (Potreban CCR)
-    'apply_mold_and_decay': 2,         # Buđ i biološka degradacija
-    'apply_chemical_aging': 3,         # Oksidacija/Starenje
-    'apply_fft_lpf': 4,                # Gubitak oštrine (FFT LPF)
-    'apply_cracks': 5,                 # Pukotine na platnu
-    'apply_paint_flaking': 6,          # Ljuštenje boje
-    'apply_water_stains': 7,           # Vodene mrlje (Coffee-ring) (Potreban CCR)
-    'apply_dust_and_scratches': 8,     # Prašina i ogrebotine
-    'apply_combined_damage': 9,        # Kombinovano oštećenje (Potreban CCR)
-}
-
-# Klase kod kojih se aktivira Contrast Color Recovery (CCR)
-CCR_CLASSES = {1, 7, 9}
-
-
-# klasik dodinamreza zbog klasifiakcije
-class RecursiveDenseMicroBlock(nn.Module):
-    def __init__(self, channels: int, num_recursions: int = 3):
-        super().__init__()
-        self.num_recursions = num_recursions
-        self.conv = nn.Conv2d(channels, channels, 3, padding=1)
-        self.bn = nn.BatchNorm2d(channels)
-        self.fusion = nn.Conv2d(channels * num_recursions, channels, 1)
-
-    def forward(self, x: Tensor) -> Tensor:
-        outputs = []
-        out = x
-        for _ in range(self.num_recursions):
-            out = F.relu(self.bn(self.conv(out)) + x)
-            outputs.append(out)
-        merged = torch.cat(outputs, dim=1)
-        return self.fusion(merged)
-
-
-class SpectralDecomposeBlock(nn.Module):
-    def __init__(self, channels: int):
-        super().__init__()
-        self.low_conv = nn.Sequential(
-            nn.Conv2d(channels, channels, 3, padding=1),
-            nn.BatchNorm2d(channels),
-            nn.ReLU(inplace=True)
-        )
-        self.high_conv = nn.Sequential(
-            nn.Conv2d(channels, channels, 3, padding=1),
-            nn.BatchNorm2d(channels),
-            nn.ReLU(inplace=True)
-        )
-        self.gate = nn.Sequential(
-            nn.AdaptiveAvgPool2d(1),
-            nn.Conv2d(channels * 2, 2, 1),
-            nn.Softmax(dim=1)
-        )
-        self.fuse = nn.Conv2d(channels * 2, channels, 1)
-
-    def forward(self, x: Tensor) -> Tensor:
-        low = F.interpolate(
-            F.avg_pool2d(x, kernel_size=2),
-            size=x.shape[2:], mode='bilinear', align_corners=False
-        )
-        high = x - low
-        low_feat = self.low_conv(low)
-        high_feat = self.high_conv(high)
-        concat = torch.cat([low_feat, high_feat], dim=1)
-        w = self.gate(concat)
-        fused = w[:, 0:1] * low_feat + w[:, 1:2] * high_feat
-        return self.fuse(torch.cat([fused, x], dim=1))
-
-
-class SpatialBlock(nn.Module):
-    def __init__(self, in_ch: int, out_ch: int):
-        super().__init__()
-        self.conv = nn.Sequential(
-            nn.Conv2d(in_ch, out_ch, 3, padding=1),
-            nn.BatchNorm2d(out_ch),
-            nn.ReLU(inplace=True)
-        )
-        self.dense_micro = RecursiveDenseMicroBlock(out_ch, num_recursions=3)
-        self.pool = nn.MaxPool2d(2)
-
-    def forward(self, x: Tensor) -> tuple[Tensor, Tensor]:
-        x = self.conv(x)
-        x = self.dense_micro(x)
-        pooled = self.pool(x)
-        return pooled, x
-
-
-class AsymmetricCrossBridge(nn.Module):
-    def __init__(self, spatial_ch: int, spectral_ch: int, out_ch: int):
-        super().__init__()
-        self.spatial_to_spectral = nn.Sequential(
-            nn.Conv2d(spatial_ch, spectral_ch, 1),
-            nn.BatchNorm2d(spatial_ch),
-            nn.ReLU(inplace=True)
-        )
-        self.spectral_to_spatial = nn.Sequential(
-            nn.Conv2d(spectral_ch, spatial_ch, 1),
-            nn.BatchNorm2d(spatial_ch),
-            nn.ReLU(inplace=True)
-        )
-        self.fuse = nn.Conv2d(spatial_ch + spectral_ch, out_ch, 1)
-
-    def forward(self, spatial_feat: Tensor, spectral_feat: Tensor) -> Tensor:
-        spectral_enhanced = spectral_feat + self.spatial_to_spectral(
-            F.adaptive_avg_pool2d(spatial_feat, spectral_feat.shape[2:])
-        )
-        spatial_enhanced = spatial_feat + self.spectral_to_spatial(
-            F.interpolate(spectral_feat, size=spatial_feat.shape[2:],
-                          mode='bilinear', align_corners=False)
-        )
-        min_h = min(spatial_feat.shape[2], spectral_feat.shape[2])
-        min_w = min(spatial_feat.shape[3], spectral_feat.shape[3])
-        s_pooled = F.adaptive_avg_pool2d(spatial_enhanced, (min_h, min_w))
-        sp_pooled = F.adaptive_avg_pool2d(spectral_enhanced, (min_h, min_w))
-        return self.fuse(torch.cat([s_pooled, sp_pooled], dim=1))
-
-
-class GatedFusionBlock(nn.Module):
-    def __init__(self, spatial_ch: int, spectral_ch: int, out_ch: int):
-        super().__init__()
-        self.spatial_proj = nn.Conv2d(spatial_ch, out_ch, 1)
-        self.spectral_proj = nn.Conv2d(spectral_ch, out_ch, 1)
-        self.gate = nn.Sequential(
-            nn.AdaptiveAvgPool2d(1),
-            nn.Flatten(),
-            nn.Linear(out_ch * 2, out_ch // 4),
-            nn.ReLU(inplace=True),
-            nn.Linear(out_ch // 4, out_ch * 2),
-            nn.Sigmoid()
-        )
-
-    def forward(self, spatial: Tensor, spectral: Tensor) -> Tensor:
-        s = self.spatial_proj(spatial)
-        sp = self.spectral_proj(
-            F.interpolate(spectral, size=spatial.shape[2:],
-                          mode='bilinear', align_corners=False)
-        )
-        combined = torch.cat([s, sp], dim=1)
-        gates = self.gate(combined).view(combined.shape[0], -1, 1, 1)
-        out_ch_val = s.shape[1]
-        s_gate = gates[:, :out_ch_val]
-        sp_gate = gates[:, out_ch_val:]
-        return s_gate * s + sp_gate * sp
-
-
-class DamageAttentionModule(nn.Module):
-    def __init__(self, in_channels: int):
-        super().__init__()
-        self.attention = nn.Sequential(
-            nn.Conv2d(in_channels, in_channels // 4, 3, padding=1),
-            nn.BatchNorm2d(in_channels // 4),
-            nn.ReLU(inplace=True),
-            nn.Conv2d(in_channels // 4, 1, 1),
-            nn.Sigmoid()
-        )
-        self.refine = nn.Sequential(
-            nn.Conv2d(in_channels, in_channels, 3, padding=1),
-            nn.BatchNorm2d(in_channels),
-            nn.ReLU(inplace=True)
-        )
-
-    def forward(self, x: Tensor) -> tuple[Tensor, Tensor]:
-        attn_map = self.attention(x)
-        attended = x * attn_map
-        refined = self.refine(attended) + x
-        return refined, attn_map
-
-
-class DodinaMreza(nn.Module):
-    def __init__(self, num_classes: int = 2, in_channels: int = 3):
-        super().__init__()
-        self.spatial_block1 = SpatialBlock(in_channels, 64)
-        self.spatial_block2 = SpatialBlock(64, 128)
-        self.spatial_block3 = SpatialBlock(128, 256)
-
-        self.spectral_init = nn.Conv2d(in_channels, 64, 3, padding=1)
-        self.spectral_block1 = SpectralDecomposeBlock(64)
-        self.spectral_pool1 = nn.MaxPool2d(2)
-        self.spec_proj1 = nn.Sequential(
-            nn.Conv2d(64, 128, 1), nn.BatchNorm2d(128), nn.ReLU(inplace=True)
-        )
-        self.spectral_block2 = SpectralDecomposeBlock(128)
-        self.spectral_pool2 = nn.MaxPool2d(2)
-        self.spec_proj2 = nn.Sequential(
-            nn.Conv2d(128, 256, 1), nn.BatchNorm2d(256), nn.ReLU(inplace=True)
-        )
-        self.spectral_block3 = SpectralDecomposeBlock(256)
-
-        self.cross1 = AsymmetricCrossBridge(64, 64, 64)
-        self.cross2 = AsymmetricCrossBridge(128, 128, 128)
-        self.cross3 = AsymmetricCrossBridge(256, 256, 256)
-
-        self.gated_fusion = GatedFusionBlock(256, 256, 512)
-        self.damage_attention = DamageAttentionModule(512)
-
-        self.classifier = nn.Sequential(
-            nn.AdaptiveAvgPool2d(1),
-            nn.Flatten(),
-            nn.Linear(512, 256),
-            nn.ReLU(inplace=True),
-            nn.Dropout(0.5),
-            nn.Linear(256, 128),
-            nn.ReLU(inplace=True),
-            nn.Dropout(0.3),
-            nn.Linear(128, num_classes),
-        )
-        self.damage_map_head = nn.Sequential(
-            nn.Conv2d(512, 64, 3, padding=1),
-            nn.ReLU(inplace=True),
-            nn.Conv2d(64, 1, 1),
-            nn.Sigmoid()
-        )
-
-    def forward(self, x: Tensor) -> dict[str, Tensor]:
-        s1, s1_skip = self.spatial_block1(x)
-        s2, s2_skip = self.spatial_block2(s1)
-        s3, s3_skip = self.spatial_block3(s2)
-
-        sp0 = self.spectral_init(x)
-        sp1 = self.spectral_block1(sp0)
-        sp1_p = self.spec_proj1(self.spectral_pool1(sp1))
-        sp2 = self.spectral_block2(sp1_p)
-        sp2_p = self.spec_proj2(self.spectral_pool2(sp2))
-        sp3 = self.spectral_block3(sp2_p)
-
-        c1 = self.cross1(s1_skip, sp1)
-        c2 = self.cross2(s2_skip, sp2)
-        c3 = self.cross3(s3_skip, sp3)
-
-        s3_enriched = s3 + F.adaptive_avg_pool2d(c3, s3.shape[2:])
-
-        fused = self.gated_fusion(s3_enriched, sp3)
-        attended, damage_map = self.damage_attention(fused)
-
-        logits = self.classifier(attended)
-        aux_damage = self.damage_map_head(attended)
-
-        return {
-            'logits': logits,
-            'damage_map': damage_map,
-            'aux_damage': aux_damage
-        }
-
-
-# ovde je deo od klasifiakcije
-class DamageDataset(Dataset):
-    def __init__(self, dataset_dir: str, img_size: int = 128, train: bool = True):
-        if train:
-            self.transform = transforms.Compose([
-                transforms.Resize((img_size, img_size)),
-                transforms.RandomHorizontalFlip(p=0.5),
-                transforms.RandomVerticalFlip(p=0.3),
-                transforms.RandomRotation(15),
-                transforms.ColorJitter(brightness=0.2, contrast=0.2,
-                                       saturation=0.1, hue=0.05),
-                transforms.RandomAffine(degrees=0, translate=(0.1, 0.1)),
-                transforms.ToTensor(),
-            ])
-        else:
-            self.transform = transforms.Compose([
-                transforms.Resize((img_size, img_size)),
-                transforms.ToTensor(),
-            ])
-
-        self.samples = []
-        for label in [0, 1]:
-            folder = os.path.join(dataset_dir, str(label))
-            if not os.path.exists(folder):
-                continue
-            for fname in sorted(os.listdir(folder)):
-                if fname.lower().endswith(('.png', '.jpg', '.jpeg', '.bmp', '.tiff')):
-                    self.samples.append((os.path.join(folder, fname), label))
-
-    def __len__(self):
-        return len(self.samples)
-
-    def __getitem__(self, idx):
-        path, label = self.samples[idx]
-        img = Image.open(path).convert('RGB')
-        img = self.transform(img)
-        return img, label, path
-
-
-
 class RecursiveDenseRestorationBlock(nn.Module):
     def __init__(self, channels: int, num_recursions: int = 3):
         super().__init__()
@@ -610,22 +325,22 @@ class Restauracija(nn.Module):
         self.skip_refine3 = nn.Sequential(RecursiveDenseRestorationBlock(base_ch * 4, num_recursions=2), SpectralDecompositionRestorationBlock(base_ch * 4))
         self.skip_refine4 = nn.Sequential(RecursiveDenseRestorationBlock(base_ch * 8, num_recursions=2), SpectralDecompositionRestorationBlock(base_ch * 8))
 
-        # Pomoćne AUX grane (  model, pored svog glavnog cilja, trenira da rešava i sekundarne, pomoćne zadatke)
+        # Pomoćne AUX grane
         self.aux_head3 = nn.Sequential(nn.Conv2d(base_ch * 2, base_ch, 3, padding=1, bias=False), nn.ReLU(inplace=False), nn.Conv2d(base_ch, out_channels, 3, padding=1, bias=False))
         self.aux_head2 = nn.Sequential(nn.Conv2d(base_ch, base_ch // 2, 3, padding=1, bias=False), nn.ReLU(inplace=False), nn.Conv2d(base_ch // 2, out_channels, 3, padding=1))
 
         self.final_refinement = nn.Sequential(RecursiveDenseRestorationBlock(base_ch, num_recursions=2), SpectralDecompositionRestorationBlock(base_ch), RecursiveDenseRestorationBlock(base_ch, num_recursions=2))
         self.output_head = nn.Sequential(nn.Conv2d(base_ch, base_ch // 2, 3, padding=1, bias=False), nn.ReLU(inplace=False), nn.Conv2d(base_ch // 2, out_channels, 3, padding=1))
 
-        # dinamicki blok ya bojee
+        # dinamicki blok za boje
         self.contrast_color_recovery = ContrastColorRecovery(base_ch, out_channels)
 
-    def forward(self, x: Tensor, use_ccr: Tensor | bool = True) -> Tensor | dict[str, Tensor]:
+    def forward(self, x: Tensor, use_ccr: bool = True) -> Tensor | dict[str, Tensor]:
         input_img = x
         s1, s1_skip = self.spatial_block1(x)
         s2, s2_skip = self.spatial_block2(s1)
         s3, s3_skip = self.spatial_block3(s2)
-        s4, s4_skip = self.spatial_block4(s3) #  s4 za stabilno i dokazano poklapanje slojeva
+        s4, s4_skip = self.spatial_block4(s3)
         sp1 = self.spectral_block1(self.spectral_init(x))
         sp1_p = self.spec_proj1(self.spectral_pool1(sp1))
         sp2 = self.spectral_block2(sp1_p)
@@ -655,13 +370,8 @@ class Restauracija(nn.Module):
         edge_feats = self.edge_branch(input_img)
         d1_fused = self.edge_fusion(torch.cat([d1_refined, edge_feats], dim=1))
 
-        # Uslovni prolaz: CCR ili Standardna rezidualna veza i ovde ako je za ccr to su ona tri oštećenja gore navedena
-        residual = self.output_head(d1_fused)
-        out_no_ccr = torch.clamp(input_img + residual, 0.0, 1.0)
-        out_ccr = self.contrast_color_recovery(d1_fused, input_img)
-
-        # Koristimo adaptivni self-gated CCR iz Vašeg originalnog modela
-        out = out_ccr
+        # CCR se primenjuje na izlaz za vrhunske boje
+        out = self.contrast_color_recovery(d1_fused, input_img)
 
         if self.training:
             aux3 = self.aux_head3(d3)
@@ -682,7 +392,7 @@ class Restauracija(nn.Module):
         return out
 
 
-# skup za restauraciju jej
+# skup za restauraciju
 class RestorationDataset(Dataset):
     def __init__(self, dataset_dir: str, img_size: int = 192, train: bool = True, preload_to_ram: bool = True):
         self.img_size = img_size
@@ -696,7 +406,6 @@ class RestorationDataset(Dataset):
 
         dmg_files = sorted([f for f in os.listdir(folder_1) if f.lower().endswith(('.png', '.jpg', '.jpeg', '.bmp', '.tiff'))])
         self.pairs = []
-        self.use_ccr_list = []
 
         for dmg_f in dmg_files:
             parts = dmg_f.split('_')
@@ -711,12 +420,10 @@ class RestorationDataset(Dataset):
 
             if os.path.exists(clean_path):
                 self.pairs.append((dmg_path, clean_path))
-                is_ccr = any(pattern in dmg_f for pattern in ['apply_anisotropic_diffusion', 'apply_water_stains', 'apply_combined_damage'])
-                self.use_ccr_list.append(is_ccr)
 
         self.cached_pairs = []
         if self.preload_to_ram and len(self.pairs) > 0:
-            print(f"[Dataset] ucitavanje {len(self.pairs)} parova za restauracijicu")
+            print(f"[Dataset] ucitavanje {len(self.pairs)} parova za restauraciju")
             for deg_path, clean_path in self.pairs:
                 deg_img = Image.open(deg_path).convert('RGB').resize((img_size, img_size), Image.Resampling.BILINEAR)
                 clean_img = Image.open(clean_path).convert('RGB').resize((img_size, img_size), Image.Resampling.BILINEAR)
@@ -745,7 +452,7 @@ class RestorationDataset(Dataset):
             if k > 0:
                 deg_t, clean_t = torch.rot90(deg_t, k=k, dims=[1, 2]), torch.rot90(clean_t, k=k, dims=[1, 2])
 
-            # sinhronizovane kolor i kontrast augmentacije
+            # Color i kontrast augmentacije
             if torch.rand(1) > 0.5:
                 brightness_factor = random.uniform(0.85, 1.15)
                 contrast_factor = random.uniform(0.85, 1.15)
@@ -760,13 +467,13 @@ class RestorationDataset(Dataset):
                 deg_t = TF.adjust_saturation(deg_t, saturation_factor)
                 clean_t = TF.adjust_saturation(clean_t, saturation_factor)
 
-        return deg_t, clean_t, self.use_ccr_list[idx]
+        return deg_t, clean_t
 
     def __len__(self):
         return len(self.pairs)
 
 
-# gubici za model restauracije
+# Gubici za model restauracije
 class SSIMLoss(nn.Module):
     def __init__(self, window_size: int = 11):
         super().__init__()
@@ -938,170 +645,20 @@ class RestauracijaLoss(nn.Module):
         return self.multi_scale_loss(pred_outputs, target)
 
 
-# ucitavanje dodinemrezejej
-def evaluiraj_dodinu_mrezu_sa_detaljnim_klasama(
-    model_path: str,
-    test_dataset_dir: str,
-    img_size: int = 128,
-    batch_size: int = 32,
-    koristi_mini_podskup: bool = True,
-    velicina_podskupa: int = 10000
-):
-    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-    print(f"{'='*60}\nUređaj za proračune: {device.type.upper()}\nTestni dataset: {test_dataset_dir}\n{'='*60}\n")
-
-    test_dataset = DamageDataset(test_dataset_dir, img_size=img_size, train=False)
-    if len(test_dataset) == 0:
-        print(f"Nema slika na putanji {test_dataset_dir}!")
-        return None
-
-    if koristi_mini_podskup and len(test_dataset) > velicina_podskupa:
-        indeksi = np.linspace(0, len(test_dataset) - 1, velicina_podskupa, dtype=int).tolist()
-        test_dataset = Subset(test_dataset, indeksi)
-        print(f"[INFO] Aktiviran podskup od {len(test_dataset)} slika.")
-
-    test_loader = DataLoader(test_dataset, batch_size=batch_size, shuffle=False, num_workers=2, pin_memory=True)
-
-    # klasifikator
-    model = DodinaMreza(num_classes=2).to(device)
-
-    if not os.path.exists(model_path):
-        print(f"Model nije pronađen: {model_path}")
-        return None
-
-    checkpoint = torch.load(model_path, map_location=device, weights_only=False)
-    if 'model_state_dict' in checkpoint:
-        model.load_state_dict(checkpoint['model_state_dict'])
-        print(f"Učitan checkpoint modela: {model_path}")
-    else:
-        model.load_state_dict(checkpoint)
-        print("Učitane sirove težine modela.")
-
-    model.eval()
-
-    all_probs = []
-    all_labels = []
-    all_paths = []
-
-    damage_names = {
-        'apply_anisotropic_diffusion': 'Vlaga i gubitak detalja',
-        'apply_mold_and_decay': 'Bud i bioloska degradacija',
-        'apply_chemical_aging': 'Hemijsko starenje i zutilo',
-        'apply_fft_lpf': 'Gubitak ostrine (FFT LPF)',
-        'apply_cracks': 'Pukotine na platnu',
-        'apply_water_stains': 'Vodene mrlje (Coffee-ring)',
-        'apply_paint_flaking': 'Ljustenje boje',
-        'apply_dust_and_scratches': 'Prasina i ogrebotine',
-        'apply_combined_damage': 'Kombinovano ostecenje'
-    }
-
-    stats = {name: {'total': 0, 'correct': 0} for name in damage_names.values()}
-    stats['Bez ostecenja (Ciste slike)'] = {'total': 0, 'correct': 0}
-
-    print("pokretanje") #jako bitno naglasiti da ima taj TTA ako je problem maknucu
-    with torch.no_grad():
-        for images, labels, paths in test_loader:
-            images = images.to(device)
-
-            outputs = model(images)
-            probs_orig = F.softmax(outputs['logits'], dim=-1)
-
-            probs_flipped_h = F.softmax(model(torch.flip(images, dims=[3]))['logits'], dim=-1)
-            probs_flipped_v = F.softmax(model(torch.flip(images, dims=[2]))['logits'], dim=-1)
-            probs_rot180 = F.softmax(model(torch.flip(images, dims=[2, 3]))['logits'], dim=-1)
-            probs_bright = F.softmax(model(torch.clamp(images * 1.15, 0.0, 1.0))['logits'], dim=-1)
-
-            probs_final = (probs_orig + probs_flipped_h + probs_flipped_v + probs_rot180 + probs_bright) / 5.0
-
-            all_probs.extend(probs_final[:, 1].cpu().numpy())
-            all_labels.extend(labels.cpu().numpy())
-            all_paths.extend(paths)
-
-    all_probs = np.array(all_probs)
-    all_labels = np.array(all_labels)
-
-    # Dinamička pretraga praga za binarnu klasifikacij
-    best_threshold = 0.5  #pretraga optimalnog praga od 0.10 vrndosti do 0.9 sa skokom od 0.01 i on testira svih 80 i onda vidi koji daje najveci f1 score i taj uzme kao najbolji tj to bude prag
-    best_f1 = 0.0
-    thresholds = np.arange(0.10, 0.90, 0.01)
-    for t in thresholds:
-        preds = (all_probs >= t).astype(int)
-        f1 = f1_score(all_labels, preds)
-        if f1 > best_f1:
-            best_f1 = f1
-            best_threshold = t
-
-    print(f"Optimalni prag {best_threshold:.2f}")
-
-    all_preds = (all_probs >= best_threshold).astype(int)
-
-    # Razvrstavanje statistika po klasama oštećenja na osnovu analize imena fajla
-    for pred, label, path in zip(all_preds, all_labels, all_paths):
-        if label == 0:
-            stats['Bez ostecenja (Ciste slike)']['total'] += 1
-            if pred == 0:
-                stats['Bez ostecenja (Ciste slike)']['correct'] += 1
-        else:
-            filename = os.path.basename(path).lower()
-            for func_name, display_name in damage_names.items():
-                if func_name in filename:
-                    stats[display_name]['total'] += 1
-                    if pred == 1:
-                        stats[display_name]['correct'] += 1
-                    break
-
-    ukupna_tacnost = accuracy_score(all_labels, all_preds) * 100
-    print("\n" + "="*50)
-    print(f"REZULTATI KLASIFIKACIJE")
-    print(f"Ukupna tačnost modela (Accuracy): {ukupna_tacnost:.2f}%")
-    print("="*50 + "\n")
-
-    PINK, RESET, BOLD = "\033[38;5;205m", "\033[0m", "\033[1m"
-    print(f"{BOLD}Pregled po tipu oštećenja{RESET}")
-    print(f"{PINK}┌──────────────────────────────────┬────────────┬────────────┬──────────────┐{RESET}")
-    print(f"{PINK}│{RESET} {BOLD}{'tip ostecenja':<32} {PINK}│{RESET} {BOLD}{'testirano':<10} {PINK}│{RESET} {BOLD}{'tacno':<10} {PINK}│{RESET} {BOLD}{'tacnost (%)':<12} {PINK}│{RESET}")
-    print(f"{PINK}├──────────────────────────────────┼────────────┼────────────┼──────────────┤{RESET}")
-
-    rows = []
-    for cat, data in stats.items():
-        total = data['total']
-        correct = data['correct']
-        acc = (correct / total * 100) if total > 0 else 0.0
-        rows.append([cat, total, correct, round(acc, 2)])
-        print(f"{PINK}│{RESET} {cat:<32} {PINK}│{RESET} {total:<10d} {PINK}│{RESET} {correct:<10d} {PINK}│{RESET} {acc:<11.2f}% {PINK}│{RESET}")
-
-    print(f"{PINK}└──────────────────────────────────┴────────────┴──────────────┘{RESET}")
-
-    df_stats = pd.DataFrame(rows, columns=['tip ostecenja', 'testirano', 'tacno', 'tacnost (%)'])
-
-    cm = confusion_matrix(all_labels, all_preds)
-    plt.figure(figsize=(6, 5))
-    sns.heatmap(cm, annot=True, fmt='d', cmap='RdPu',
-                xticklabels=['Bez ostecenja', 'Osteceno'],
-                yticklabels=['Bez ostecenja', 'Osteceno'])
-    plt.xlabel('Predviđeno')
-    plt.ylabel('Stvarno')
-    plt.title('Matrica konfuzije')
-    plt.show()
-
-    return df_stats
-
-
-# trening sa tacnim nazivima
+# Trening funkcija
 def train_restauracija(
     dataset_dir: str,
-    epochs_to_train: int = 30,
+    epochs_to_train: int = 15,
     batch_size: int = 4,
     lr: float = 2e-4,
     img_size: int = 192,
     save_dir: str = '.',
-    resume: bool = False,
+    resume: bool = True,
 ):
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     train_dataset = RestorationDataset(dataset_dir, img_size=img_size, train=True, preload_to_ram=True)
     train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True, num_workers=2, pin_memory=True)
 
-    # Kreiranje stabilnog validacionog skupa od 100 slika iz trening skupa
     eval_indices = np.arange(min(100, len(train_dataset)))
     eval_subset = Subset(train_dataset, eval_indices)
     eval_loader = DataLoader(eval_subset, batch_size=batch_size, shuffle=False, num_workers=2, pin_memory=True)
@@ -1114,7 +671,6 @@ def train_restauracija(
     start_epoch = 0
     best_psnr = 0.0
 
-    # KORISTE SE TAČNI NAZIVI
     checkpoint_path = os.path.join(save_dir, 'dodinarestauracijajej.pth')
     best_checkpoint_path = os.path.join(save_dir, 'dodinarestauracijabest.pth')
 
@@ -1122,15 +678,14 @@ def train_restauracija(
         checkpoint = torch.load(checkpoint_path, map_location=device, weights_only=False)
         model.load_state_dict(checkpoint['model_state_dict'], strict=False)
         start_epoch = checkpoint.get('epoch', 0)
-        best_psnr = checkpoint.get('best_psnr', 0.0)  # Učitavanje najboljeg PSNR-a
+        best_psnr = checkpoint.get('best_psnr', 0.0)
         for param_group in optimizer.param_groups:
             param_group['lr'] = 5e-5
         scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=epochs_to_train, eta_min=1e-6)
-        print(f"nastavak od epohe {start_epoch+1}. Najbolji zrezultat za PSNR: {best_psnr:.2f} dB")
+        print(f"Nastavak od epohe {start_epoch+1}. Najbolji rezultat za PSNR: {best_psnr:.2f} dB")
     else:
-        print("restauracija ide od nule iliti nema sacuvanom modela na toj putanji ")
+        print("Restauracija ide od nule ili nema sačuvanog modela na toj putanji.")
 
-    # Akumulacija gradijenata (Simulacija stabilnosti većeg batch size-a od 12)
     accumulation_steps = 3
     optimizer.zero_grad()
 
@@ -1138,14 +693,12 @@ def train_restauracija(
         model.train()
         running_loss = 0.0
 
-        for batch_idx, (deg, clean, use_ccr) in enumerate(train_loader):
+        for batch_idx, (deg, clean) in enumerate(train_loader):
             deg, clean = deg.to(device), clean.to(device)
 
-            # Koristimo originalni, samostalni CCR iz Vašeg modela bez use_ccr u forward-u
             outputs = model(deg)
             loss = criterion(outputs, clean)
 
-            # Podela gubitka sa koracima akumulacije
             loss = loss / accumulation_steps
             loss.backward()
 
@@ -1158,16 +711,14 @@ def train_restauracija(
 
         epoch_loss = running_loss / len(train_loader)
 
-        # valdiacija na kraju epohe cisto da vidim kako ide i da se ucita najbolji model
         model.eval()
         total_psnr = 0.0
         num_batches = 0
 
         with torch.no_grad():
-            for deg, clean, _ in eval_loader:
+            for deg, clean in eval_loader:
                 deg, clean = deg.to(device), clean.to(device)
 
-                # 4-way TTA da bi se bolje proberilo
                 out_orig = model(deg)
 
                 deg_hf = torch.flip(deg, dims=[3])
@@ -1192,14 +743,12 @@ def train_restauracija(
 
         print(f"Restauracija | Epoha {epoch+1:02d} | Loss: {epoch_loss:.5f} | Val PSNR: {avg_psnr:.2f} dB")
 
-        # cuvanje poslednjeg checkpoint-a
         torch.save({
             'epoch': epoch + 1,
             'model_state_dict': model.state_dict(),
             'best_psnr': best_psnr,
         }, checkpoint_path)
 
-        # ovde se cuva najbolji model da bi se sa njim radila evaaluacija
         if avg_psnr > best_psnr:
             best_psnr = avg_psnr
             torch.save({
@@ -1207,85 +756,37 @@ def train_restauracija(
                 'model_state_dict': model.state_dict(),
                 'best_psnr': best_psnr,
             }, best_checkpoint_path)
-            print(f"  ★ Novi najbolji u {best_checkpoint_path} (PSNR: {best_psnr:.2f} dB)")
+            print(f"  ★ Novi najbolji model sačuvan u {best_checkpoint_path} (PSNR: {best_psnr:.2f} dB)")
 
     return model
 
 
-# putanjice
+# Glavni ulaz
 if __name__ == '__main__':
     save_dir = "/content/drive/MyDrive/Projekat_Model"
-    klasifikator_path = os.path.join(save_dir, "dodinamrezajej.pth")
     restauracija_path = os.path.join(save_dir, "dodinarestauracijajej.pth")
 
-    # putanjice ali za drajv NE ZA KLASTER
     drive_trening_zip = "/content/drive/MyDrive/Projekat_Model/trening.zip"
-    drive_test_zip = "/content/drive/MyDrive/Projekat_Model/test.zip"
-
-    # putanjice pt2
     lokalni_trening_path = "/content/trening"
-    lokalni_test_path = "/content/test"
 
-    # sredjivanje test dataseta
-    if not os.path.exists(lokalni_test_path):
-        if os.path.exists(drive_test_zip):
-            print(f"otpakivanje {drive_test_zip} u {lokalni_test_path}...")
-            get_ipython().system(f'unzip -q "{drive_test_zip}" -d "{lokalni_test_path}"')
-            print("gotojooo otpakivanje")
-        elif os.path.exists("/content/drive/MyDrive/Projekat_Model/test"):
-            print("nema zipa pa se trazi dalje")
-            lokalni_test_path = "/content/drive/MyDrive/Projekat_Model/test"
-        else:
-            print("nema dataseta nigde")
-
-    # sredjivanje trening dataseta
     if not os.path.exists(lokalni_trening_path):
         if os.path.exists(drive_trening_zip):
-            print(f"otpakivanje {drive_trening_zip} u {lokalni_trening_path}...")
+            print(f"Otpakivanje {drive_trening_zip} u {lokalni_trening_path}...")
             get_ipython().system(f'unzip -q "{drive_trening_zip}" -d "{lokalni_trening_path}"')
-            print("gotojooo otpakivanje")
+            print("Otpakivanje završeno.")
         elif os.path.exists("/content/drive/MyDrive/Projekat_Model/trening"):
-            print("nema zipa pa se trazi dalje")
             lokalni_trening_path = "/content/drive/MyDrive/Projekat_Model/trening"
-        else:
-            print("nema dataseta nigde")
 
-
-    # ucitavanje klasifikacije
-
-    classifier_cache_path = os.path.join(save_dir, 'classifier_evaluation_cache.csv')
-
-    print(f"\nprovera za klasifikaciju ")
-    if os.path.exists(classifier_cache_path):
-        print("nadjena je odradjena klasifiakcija")
-        stats_df = pd.read_csv(classifier_cache_path)
-        print(stats_df.to_string(index=False))
-    else:
-        print("nema vec uradjene kalsifiakcije, ajmooo ispocetka")
-        stats_df = evaluiraj_dodinu_mrezu_sa_detaljnim_klasama(
-            model_path=klasifikator_path,
-            test_dataset_dir=lokalni_test_path,
-            img_size=128,
-            batch_size=32,
-            koristi_mini_podskup=True,
-            velicina_podskupa=10000
-        )
-        if stats_df is not None:
-            stats_df.to_csv(classifier_cache_path, index=False)
-            print(f"Rezultati evaluacije sačuvani u  {classifier_cache_path}")
-
-
-    # pokretanje treningaaa
-    print(f"\npokretanje treninga ovog modela  {restauracija_path}...")
+    print(f"\nPokretanje nastavka treninga za model: {restauracija_path}...")
     if os.path.exists(lokalni_trening_path):
         restoracioni_model = train_restauracija(
             dataset_dir=lokalni_trening_path,
-            epochs_to_train=15,
+            epochs_to_train=50,
             batch_size=4,
             lr=2e-4,
             img_size=192,
             save_dir=save_dir,
-            resume=True # ako je false trening ide ispocetka a ko je true odna se nastavljaaa
+            resume=True
         )
     else:
-        print(f"nema dataseta na putanji {lokalni_trening_path}")
+        print(f"Dataset nije pronađen na putanji {lokalni_trening_path}")
