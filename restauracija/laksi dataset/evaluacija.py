@@ -17,7 +17,6 @@ from tqdm import tqdm
 from skimage.metrics import peak_signal_noise_ratio as psnr_metric
 from skimage.metrics import structural_similarity as ssim_metric
 
-# Montiranje Google Drive-a
 drive.mount('/content/drive')
 
 # Definisanje novih putanja na drajvu i lokalno
@@ -27,24 +26,18 @@ output_dir = '/content/drive/MyDrive/Projekat_Model/RESTAURISANE_SLIKE'
 
 local_extract_path = '/content/test'
 
-# Otpakivanje novog dataset-a lokalno u Colab
+# otpakivanje dataseta
 if not os.path.exists(local_extract_path):
-    print("Otpakujem test.zip lokalno...")
+    print("otpakivanje dataseta")
     with zipfile.ZipFile(zip_path, 'r') as zip_ref:
         zip_ref.extractall(local_extract_path)
-    print("Dataset uspešno otpakovan.")
+    print("gotojoo")
 
-# ============================================================
-# 🔥 VAŽNA KONTROLNA PROMENLJIVA ZA EVALUACIJU
-# ============================================================
-# True: Koristi CCR za sva oštećenja (preporučeno za dodinarestauracijabest.pth)
-# False: Koristi CCR uslovno samo za 3 oštećenja (vlaga, vodene mrlje, kombinovano)
+# ovde se ccr koristi za sve al može se menjati ovo al bolje je kad ide na sve
 SVA_OSTECENJA_KORISTE_CCR = True
 
 
-# =====================================================================
-# 2. GLAVNI BLOKOVI ZA RESTAURACIJU (PREPISANI IZ VAŠEG TRENING KODA)
-# =====================================================================
+# služi da zameni običnu konvoluciju efikasnijom konvolucijom koja koristi manje parametara i da brze i radi
 class DepthwiseSeparableConv2d(nn.Module):
     def __init__(self, in_ch: int, out_ch: int, kernel_size: int = 3, padding: int = 1, dilation: int = 1):
         super().__init__()
@@ -54,7 +47,8 @@ class DepthwiseSeparableConv2d(nn.Module):
     def forward(self, x: Tensor) -> Tensor:
         return self.pointwise(self.depthwise(x))
 
-
+#ovde je arhitektura modela
+# ista konvolucija se primenjuje više puta nad istim ulazom kako bi se postepeno izdvojile i primetile sitni detalji
 class RecursiveDenseRestorationBlock(nn.Module):
     def __init__(self, channels: int, num_recursions: int = 3):
         super().__init__()
@@ -72,7 +66,9 @@ class RecursiveDenseRestorationBlock(nn.Module):
         merged = torch.cat(outputs, dim=1)
         return self.fusion(merged)
 
-
+ #za moj model ovo je jedna od najbitnijih delova
+    #ovaj deo razdvaja sliku na dve razlicite vrste informacija
+        #prvo je na niske frekv (glatke oblasti tipa svetlo) i visoke frekv (ivice sum tekstura)
 class SpectralDecompositionRestorationBlock(nn.Module):
     def __init__(self, channels: int):
         super().__init__()
@@ -106,7 +102,8 @@ class SpectralDecompositionRestorationBlock(nn.Module):
         fused = w[:, 0:1] * low_feat + w[:, 1:2] * high_feat
         return self.fuse(torch.cat([fused, x], dim=1))
 
-
+#SpatialBlock obradjuje prostorne karakteristike slike
+#kombinujuci osnovne konvolucione filtere, rekurzivnu obradu detalja i redukciju rezolucije radi boljeg i efikasnijeg izdvajanja vizuelnih informacija
 class SpatialEncoderRestorationBlock(nn.Module):
     def __init__(self, in_ch: int, out_ch: int):
         super().__init__()
@@ -124,7 +121,8 @@ class SpatialEncoderRestorationBlock(nn.Module):
         pooled = self.pool(x)
         return pooled, x
 
-
+#ovde je kao komunikacija spektralnog i tog detaljnog dela
+#takodje se i pretvaraju prostorne info u format koji spektral domen može da razume i obrnuto
 class AsymmetricCrossBridgeRestoration(nn.Module):
     def __init__(self, spatial_ch: int, spectral_ch: int, out_ch: int):
         super().__init__()
@@ -155,6 +153,12 @@ class AsymmetricCrossBridgeRestoration(nn.Module):
         return self.fuse(torch.cat([s_pooled, sp_pooled], dim=1))
 
 
+   #ovaj blok spaja prostorne informacije i spektralne informacije
+   #pretvara spatial feature-e u isti prostor dimenzija
+   #ovde se gleda cela slika, globalno izracunava koliko je sta vazno i daje tezine (weights)
+        #tezine su brojevi koje model uci tokom treninga da bi odlucio koliko da veruje nekoj odredjenoj info
+
+
 class GatedFusionRestorationBlock(nn.Module):
     def __init__(self, spatial_ch: int, spectral_ch: int, out_ch: int):
         super().__init__()
@@ -182,7 +186,9 @@ class GatedFusionRestorationBlock(nn.Module):
         sp_gate = gates[:, out:]
         return s_gate * s + sp_gate * sp
 
-
+#ovaj deo pronalazi delove slike koji lice na ostecenja i model uci gde treba da gleda kad locira ostecenja
+    #i generise se mapa paznje
+    #naglasavaju se regije slike gde su potencijalna ostecenja
 class DamageAttentionRestorationModule(nn.Module):
     def __init__(self, in_channels: int):
         super().__init__()
@@ -205,7 +211,10 @@ class DamageAttentionRestorationModule(nn.Module):
         refined = self.refine(attended) + x
         return refined, attn_map
 
-
+#ovaj deo sluzi bas za restauraciju slike tj postepeno rekonstruiše sliku u decoder delu
+#povećava se dimenzija slike
+#spajaju se info iz encodera, proslog decodera i damage mapa
+#korsiti spektral i spatial blokove i rekurzivne mikro blokove za izvdajanje sitnih detlaja
 class DecoderRestorationBlock(nn.Module):
     def __init__(self, in_ch: int, skip_ch: int, out_ch: int):
         super().__init__()
@@ -228,7 +237,9 @@ class DecoderRestorationBlock(nn.Module):
         dm = F.interpolate(damage_map, size=skip.shape[2:], mode='bilinear', align_corners=False)
         x = torch.cat([x, skip, dm], dim=1)
         return self.spectral(self.dense_micro(self.conv(x)))
-
+#ovaj blok služi da posmatra širi kontekst slike
+#Koristi četiri konvolucije sa različitim dilatacijama
+#Ako postoji veliko oštećenje (npr. pukotina ili fleka), mreža ne gleda samo nekoliko susednih piksela, već i širu okolinu, pa može bolje da proceni kako treba da izgleda obnovljeni deo slike.+
 
 class DilatedContextBlock(nn.Module):
     def __init__(self, channels: int):
@@ -433,9 +444,7 @@ def find_dataset_folders(base_path):
     return None, None
 
 
-# ============================================================
-# 5. GLAVNA EVALUACIONA PETLJA SA TTA OPTIMIZACIJOM (TEST-TIME AUGMENTATION)
-# ============================================================
+# ocde krece evalkuacija
 def pokreni_evaluaciju():
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     print(f"Uređaj za evaluaciju: {device}")
@@ -458,7 +467,7 @@ def pokreni_evaluaciju():
     model.eval()
     print("Model uspešno učitan (strict=True, bez ikakvih neslaganja).")
 
-    # Detekcija foldera unutar otpakovanog ZIP-a
+    # trazenje foldera i to ***
     f0, f1 = find_dataset_folders(local_extract_path)
     if f0 is None or f1 is None:
         raise FileNotFoundError("Greška: Nije pronađena ispravna struktura '0' i '1' foldera unutar otpakovanog dataset-a!")
@@ -493,7 +502,7 @@ def pokreni_evaluaciju():
         dmg_pil = Image.open(dmg_path).convert('RGB')
         clean_pil = Image.open(clean_path).convert('RGB')
 
-        # Veličina za model mora biti 192x192
+        # normalizacija na 192 192
         dmg_pil_resized = dmg_pil.resize((192, 192), Image.Resampling.BILINEAR)
         clean_pil_resized = clean_pil.resize((192, 192), Image.Resampling.BILINEAR)
 
@@ -504,12 +513,12 @@ def pokreni_evaluaciju():
         if SVA_OSTECENJA_KORISTE_CCR:
             trenutni_use_ccr = True
         else:
-            # CCR samo za vlugu, vodene mrlje i kombinovana oštećenja
+            # CCR samo za neka ostecenja
             trenutni_use_ccr = any(pattern in dmg_f for pattern in ['apply_anisotropic_diffusion', 'apply_water_stains', 'apply_combined_damage'])
 
-        # ovde ide tta da bi se slike bolje vratile ka originalu
+        # ovde ide tta da bi se slike bolje vratile ka originalu i da bude bolja restauracija
         with torch.no_grad():
-            # 1. Originalna predikcija
+            # gleda se originalna slika
             out_orig = model(input_tensor, use_ccr=trenutni_use_ccr)
 
             # 2. Horizontalni flip
@@ -554,12 +563,12 @@ def pokreni_evaluaciju():
             'MAE': mae_val
         })
 
-        # --- SPAŠAVANJE REZULTATA ---
-        # 1. Spašavanje same restaurisane slike u originalnoj rezoluciji
+        # ovde ide deo za rezultate i kako se prikazuju
+        # jedna slika koja se restaurise
         restored_original_size = restored_pil.resize(dmg_pil.size, Image.Resampling.BILINEAR)
         restored_original_size.save(os.path.join(pojedinacne_dir, f"restored_{dmg_f}"))
 
-        # 2. Spašavanje uporedne slike (Oštećeno | Restaurisano | Čisto) sa čistim gornjim natpisom
+        # sad ona od gore se poredi sa originalom i sa ostecenom
         num_saved_for_type = sum(1 for r in results_list if r['Oštećenje'] == dmg_type)
         if num_saved_for_type <= 25:
             bar_height = 40
@@ -577,19 +586,19 @@ def pokreni_evaluaciju():
             thickness = 1
             color = (255, 255, 255)
 
-            t1 = "OSTECENO"
+            t1 = "osteceno"
             size1 = cv2.getTextSize(t1, font, font_scale, thickness)[0]
             cx1 = (w - size1[0]) // 2
             cy1 = (bar_height + size1[1]) // 2
             cv2.putText(combined_img, t1, (cx1, cy1), font, font_scale, color, thickness, cv2.LINE_AA)
 
-            t2 = "RESTAURISANO"
+            t2 = "restaurisano"
             size2 = cv2.getTextSize(t2, font, font_scale, thickness)[0]
             cx2 = w + (w - size2[0]) // 2
             cy2 = (bar_height + size2[1]) // 2
             cv2.putText(combined_img, t2, (cx2, cy2), font, font_scale, (120, 255, 120), thickness, cv2.LINE_AA)
 
-            t3 = "ORIGINALNA"
+            t3 = "originalna"
             size3 = cv2.getTextSize(t3, font, font_scale, thickness)[0]
             cx3 = 2*w + (w - size3[0]) // 2
             cy3 = (bar_height + size3[1]) // 2
@@ -597,7 +606,7 @@ def pokreni_evaluaciju():
 
             cv2.imwrite(os.path.join(poredjenja_dir, f"compare_{dmg_f}"), combined_img)
 
-    # tabelica rezultati i to
+    # tabelica rezultati i to da vidim gde je i kako se zovu
     df = pd.DataFrame(results_list)
 
     statistika = df.groupby('Oštećenje').agg(
@@ -620,9 +629,9 @@ def pokreni_evaluaciju():
     print(f"\n\n{PINK}{'='*100}")
     print(" evaluacija")
     print(f"{'='*100}")
-    print(f"restaurisane slike su uu:  {pojedinacne_dir}")
+    print(f"restaurisane slike {pojedinacne_dir}")
     print(f"uporedna analiza sacuvana i u:    {poredjenja_dir}")
-    print(f"CSV Tabela sačuvana na:         {csv_report_path}\n")
+    print(f"tabelica         {csv_report_path}\n")
     print("="*100)
     print(" izvestaj metrika je u :")
     print("="*100)
