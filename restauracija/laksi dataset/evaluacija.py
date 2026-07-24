@@ -20,8 +20,8 @@ from skimage.metrics import structural_similarity as ssim_metric
 drive.mount('/content/drive')
 
 # Definisanje novih putanja na drajvu i lokalno
-zip_path = '/content/drive/MyDrive/Projekat_Model/DATASET_TEST.zip'
-model_path = '/content/drive/MyDrive/Projekat_Model/doroteinarestauracijabest.pth'
+zip_path = '/content/drive/MyDrive/Projekat_Model/test.zip'
+model_path = '/content/drive/MyDrive/Projekat_Model/dodinarestauracijabest.pth'
 output_dir = '/content/drive/MyDrive/Projekat_Model/RESTAURISANE_SLIKE'
 
 local_extract_path = '/content/test'
