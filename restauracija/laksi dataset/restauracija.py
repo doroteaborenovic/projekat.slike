@@ -23,6 +23,7 @@ logging.disable(logging.CRITICAL)
 os.environ["PYTHONWARNINGS"] = "ignore"
 torch.backends.cudnn.benchmark = True
 
+# služi da zameni običnu konvoluciju efikasnijom konvolucijom koja koristi manje parametara i da brze i radi
 
 class DepthwiseSeparableConv2d(nn.Module):
     def __init__(self, in_ch: int, out_ch: int, kernel_size: int = 3, padding: int = 1, dilation: int = 1):
@@ -33,7 +34,9 @@ class DepthwiseSeparableConv2d(nn.Module):
     def forward(self, x: Tensor) -> Tensor:
         return self.pointwise(self.depthwise(x))
 
-
+#ovde je arhitektura modela
+# ista konvolucija se primenjuje više puta nad istim ulazom kako bi se postepeno izdvojile i primetile sitni detalji
+#vilj je kao kako napraviti program koji duboko i detaljno analizira podatke, a da pritom ne zauzme previše memorijice
 class RecursiveDenseRestorationBlock(nn.Module):
     def __init__(self, channels: int, num_recursions: int = 3):
         super().__init__()
@@ -51,7 +54,8 @@ class RecursiveDenseRestorationBlock(nn.Module):
         merged = torch.cat(outputs, dim=1)
         return self.fusion(merged)
 
-
+#  ovde se dakle slika prebacuje u frekvencijski domen i gledaju se visoke i niske frekvencije i tkao se odrejduje gde su detlaji sitni i gde su neke velike povrsine je
+#: deli sliku na niske i visoke frekvencije (grube površine i sitne detalje) i onda ih obrađuje odvojeno.
 class SpectralDecompositionRestorationBlock(nn.Module):
     def __init__(self, channels: int):
         super().__init__()
@@ -85,7 +89,8 @@ class SpectralDecompositionRestorationBlock(nn.Module):
         fused = w[:, 0:1] * low_feat + w[:, 1:2] * high_feat
         return self.fuse(torch.cat([fused, x], dim=1))
 
-
+#ovdde je rad sa raspodelom piksela
+#gleda se slika kao prostor i gleda se gde ima neko odstupanje
 class SpatialEncoderRestorationBlock(nn.Module):
     def __init__(self, in_ch: int, out_ch: int):
         super().__init__()
@@ -103,7 +108,9 @@ class SpatialEncoderRestorationBlock(nn.Module):
         pooled = self.pool(x)
         return pooled, x
 
-
+#komunikacija i prevdo za ihz frekv u spatial i obrnuto da bi se kasnije moglo porcentii koja odluka i analiza ima veći znacaj
+#prevodjenje iz prostornog u frekvencijski i obrnuto da bi mogli da se razumeju medjusobno
+#kasnije se ti podaci koriste da se u sledećem bloku odredi kojem se treba više verovati
 class AsymmetricCrossBridgeRestoration(nn.Module):
     def __init__(self, spatial_ch: int, spectral_ch: int, out_ch: int):
         super().__init__()
@@ -133,7 +140,10 @@ class AsymmetricCrossBridgeRestoration(nn.Module):
         sp_pooled = F.adaptive_avg_pool2d(spectral_enhanced, (min_h, min_w))
         return self.fuse(torch.cat([s_pooled, sp_pooled], dim=1))
 
-
+#posa ovde je da uzme informacije iz oba domena (prostornog i frekvencijskog) i odluči u kom delu slike će verovati kome i u kolikom procentu
+#to radi tako sto ne gleda samo piskele kao spatial nego sliku kao celinu i onda odlucuje
+#Iako je odluka doneta na osnovu globalnog stanja slike, ona se primenjuje na svaki piksel
+#
 class GatedFusionRestorationBlock(nn.Module):
     def __init__(self, spatial_ch: int, spectral_ch: int, out_ch: int):
         super().__init__()
@@ -149,8 +159,8 @@ class GatedFusionRestorationBlock(nn.Module):
         )
 
     def forward(self, spatial: Tensor, spectral: Tensor) -> Tensor:
-        s = self.spatial_proj(spatial)
-        sp = self.spectral_proj(
+        s = self.spatial_proj(spatial)  #s procenat ako slika ima kontraste velike onda s procenat je veci
+        sp = self.spectral_proj( #ako ima problem sa tipa sumom ili mutne je teksture onda se aktivira
             F.interpolate(spectral, size=spatial.shape[2:],
                           mode='bilinear', align_corners=False)
         )
@@ -161,7 +171,11 @@ class GatedFusionRestorationBlock(nn.Module):
         sp_gate = gates[:, out:]
         return s_gate * s + sp_gate * sp
 
-
+#mapiranje anomalija
+#vrsi se restauracija sao gde je lokalizovao anomaliju dok zdrave delove slike ostavlja netaknutim.
+#tu mini restauraiju raid preko konstektualnog popravljanja tj gleda 3*3 piksela okolo
+#Na osnovu okolnih zdravih piksela, konvolucioni filteri izračunavaju (pogađaju) šta je trebalo da bude na mestu anomalije.
+#
 class DamageAttentionRestorationModule(nn.Module):
     def __init__(self, in_channels: int):
         super().__init__()
@@ -184,11 +198,11 @@ class DamageAttentionRestorationModule(nn.Module):
         refined = self.refine(attended) + x
         return refined, attn_map
 
-
+#koji postepeno povećava rezoluciju slike i popravlja oštećene delove pomoću informacija iz različitih izvora
 class DecoderRestorationBlock(nn.Module):
     def __init__(self, in_ch: int, skip_ch: int, out_ch: int):
         super().__init__()
-        self.upsample = nn.Sequential(
+        self.upsample = nn.Sequential(     #povecavanje reyolucije
             nn.Upsample(scale_factor=2, mode='bilinear', align_corners=False),
             nn.Conv2d(in_ch, in_ch // 2, kernel_size=3, padding=1, bias=False)
         )
@@ -201,48 +215,53 @@ class DecoderRestorationBlock(nn.Module):
         self.spectral = SpectralDecompositionRestorationBlock(out_ch)
 
     def forward(self, x: Tensor, skip: Tensor, damage_map: Tensor) -> Tensor:
-        x = self.upsample(x)
+        x = self.upsample(x)#Uzima sliku niske rezolucije iz dubljih slojeva i povećava je duplo (skaliranje sa 2) kako bi je vratio ka originalnoj veličini
         if x.shape[2:] != skip.shape[2:]:
             x = F.interpolate(x, size=skip.shape[2:], mode='bilinear', align_corners=False)
-        dm = F.interpolate(damage_map, size=skip.shape[2:], mode='bilinear', align_corners=False)
-        x = torch.cat([x, skip, dm], dim=1)
-        return self.spectral(self.dense_micro(self.conv(x)))
+        dm = F.interpolate(damage_map, size=skip.shape[2:], mode='bilinear', align_corners=False)#tačno govori gde se na slici nalaze oštećenja
+        x = torch.cat([x, skip, dm], dim=1)   #ovde se spaja>
+                                               #Uvećana sliku iz prethodnog sloja dekodera 
+                                               #detaljne informacije visoke rezolucije direktno iz enkodera (početka mreže) koje pomažu da slika ne bude mutna
+        return self.spectral(self.dense_micro(self.conv(x)))#koristi spektral i dense micro da bi iymislila sta ce restaurirati
 
-
+#ovo sluyi da mreza vidi malol vise info bez gubitka rezolucije
 class DilatedContextBlock(nn.Module):
-    def __init__(self, channels: int):
+    def __init__(self, channels: int):  #Mreža istovremeno gleda sliku kroz četiri različite "lupe"
         super().__init__()
         mid = channels // 4
         self.c1 = nn.Conv2d(channels, mid, 3, padding=1, dilation=1, bias=False)
         self.c2 = nn.Conv2d(channels, mid, 3, padding=2, dilation=2, bias=False)
         self.c3 = nn.Conv2d(channels, mid, 3, padding=4, dilation=4, bias=False)
         self.c4 = nn.Conv2d(channels, mid, 3, padding=8, dilation=8, bias=False)
-        self.fusion = nn.Conv2d(channels, channels, 1, bias=False)
-        self.bn = nn.GroupNorm(4, channels)
+        self.fusion = nn.Conv2d(channels, channels, 1, bias=False)  # Skuplja informacije iz sva četiri vidna polja i spaja ih u jedno
+        self.bn = nn.GroupNorm(4, channels) #Na kraju dodaje originalni ulaz na dobijeni rezultat, što stabilizuje treniranje i sprečava da mreža zaboravi originalne detalje
 
     def forward(self, x: Tensor) -> Tensor:
         merged = torch.cat([self.c1(x), self.c2(x), self.c3(x), self.c4(x)], dim=1)
         return F.relu(self.bn(self.fusion(merged)) + x)
 
-
+#kao neki filter koji propusta pametne delove
+#da se ne bi slika direktno iy enkodera prenela u dekoder jer bi prenela [um onda ide ovako
+]
 class GatedSkipConnection(nn.Module):
     def __init__(self, channels: int):
         super().__init__()
         self.gate = nn.Sequential(
-            nn.AdaptiveAvgPool2d(1),
+            nn.AdaptiveAvgPool2d(1),   #Skuplja informacije sa cele slikei svodi svaku mapu karakteristika na jedan borjic
             nn.Conv2d(channels, channels, 1, bias=False),
-            nn.Sigmoid()
+            nn.Sigmoid()  #pretrvara se u ili 0 ili1  i Ako je vrednost blizu 1, ta mapa karakteristika je važna i treba je propustiti. Ako je blizu 0, ona se blokira jer sadrži nebitne info
         )
 
-    def forward(self, skip: Tensor) -> Tensor:
-        return skip * self.gate(skip)
+    def forward(self, skip: Tensor) -> Tensor: 
+        return skip * self.gate(skip)  #Na kraju, originalne karakteristike se množe sa ovim težinama, čime se filtriraju loši podaci pre nego što stignu u vaš
 
-
+#Ovaj blok ima zadatak da eksplicitno natera mrežu da se fokusira na geometriju i oštre ivice predmeta na slici
+#kada se slika resturira da se ne bi unistili detalljo 
 class EdgeBranch(nn.Module):
     def __init__(self, out_channels: int = 32):
         super().__init__()
-        kx = torch.tensor([[-1., 0., 1.], [-2., 0., 2.], [-1., 0., 1.]]).unsqueeze(0).unsqueeze(0)
-        ky = torch.tensor([[-1., -2., -1.], [0., 0., 0.], [1., 2., 1.]]).unsqueeze(0).unsqueeze(0)
+        kx = torch.tensor([[-1., 0., 1.], [-2., 0., 2.], [-1., 0., 1.]]).unsqueeze(0).unsqueeze(0)  #vert ivice
+        ky = torch.tensor([[-1., -2., -1.], [0., 0., 0.], [1., 2., 1.]]).unsqueeze(0).unsqueeze(0) #horiz ivice
         self.register_buffer('kx', kx.repeat(3, 1, 1, 1))
         self.register_buffer('ky', ky.repeat(3, 1, 1, 1))
         self.conv = nn.Sequential(
@@ -255,19 +274,24 @@ class EdgeBranch(nn.Module):
         )
 
     def forward(self, x: Tensor) -> Tensor:
-        return self.conv(torch.cat([F.conv2d(x, self.kx, padding=1, groups=3), F.conv2d(x, self.ky, padding=1, groups=3)], dim=1))
+        return self.conv(torch.cat([F.conv2d(x, self.kx, padding=1, groups=3), F.conv2d(x, self.ky, padding=1, groups=3)], dim=1))#Mreža spaja horizontalne i vertikalne ivice (dobija se 6 kanala) i propušta ih kroz dodatne konvolucije 
+#Rezultat je mapa koja jasno naglašava gde se nalaze granice objekata, što pomaže dekoderu da ponovo nacrta oštre konture tamo gde su bile uništene.
 
 
+#vracanje boja i kontrasta
+#vraca tako sto lokalno sredjuje detalja i globalno podešava osvetljenje i to
+#popunjava msm zna koja boja treba d aide takos to gleda okollne piksle
+#mreža direktno uzima "skicu" i teksturu sa delova slike koji nisu uništeni i koristi ih kao šablon za popunjavanje rupa.
 class ContrastColorRecovery(nn.Module):
     def __init__(self, in_ch: int, out_ch: int = 3):
         super().__init__()
-        self.local_conv = nn.Sequential(
+        self.local_conv = nn.Sequential(     # Propušta karakteristike kroz standardne konvolucije. Ovaj deo gleda piksel po piksel i traži male, lokalne greške u bojama i teksturi koje treba ispraviti (npr. popunjavanje sitnih detalja).
             nn.Conv2d(in_ch, in_ch // 2, 3, padding=1, bias=False),
             nn.GroupNorm(4, in_ch // 2),
             nn.ReLU(inplace=False),
             nn.Conv2d(in_ch // 2, out_ch, 3, padding=1)
         )
-        self.global_adjust = nn.Sequential(
+        self.global_adjust = nn.Sequential(   #sabija celu sliku u jedan jedini piksel koji predstavlja prosečnu boju i osvetljenje celokupne scene. Na osnovu toga, mreža odlučuje da li je cela slika previše tamna, svetla, ili joj fali kontrasta
             nn.AdaptiveAvgPool2d(1),
             nn.Conv2d(in_ch, in_ch // 4, 1, bias=False),
             nn.ReLU(inplace=False),
@@ -278,11 +302,11 @@ class ContrastColorRecovery(nn.Module):
         local_refinement = self.local_conv(x)
         global_stats = self.global_adjust(x)
         gain, bias = torch.chunk(global_stats, 2, dim=1)
-        gain = torch.sigmoid(gain).view(x.shape[0], -1, 1, 1) * 2.0
+        gain = torch.sigmoid(gain).view(x.shape[0], -1, 1, 1) * 2.0 #Ovo služi kao multiplikator kontrasta. ako je preko 1.0 kontrast se pojacava ispod 1 smanjuje se na 1.0 ne menja se)
         bias = torch.tanh(bias).view(x.shape[0], -1, 1, 1) * 0.5
         adjusted = local_refinement * gain + bias
-        return torch.clamp(input_img + adjusted, 0.0, 1.0)
-
+        return torch.clamp(input_img + adjusted, 0.0, 1.0)  # uzima se originalna slika i nju samo dodaje/oduzima finu korekciju
+      #takodje se saseca sve sto prelazi opseg od 0.0 i 1.0 
 
 # glavni deo modela restauracije
 class Restauracija(nn.Module):
