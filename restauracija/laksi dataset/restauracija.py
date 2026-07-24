@@ -220,7 +220,7 @@ class DecoderRestorationBlock(nn.Module):
             x = F.interpolate(x, size=skip.shape[2:], mode='bilinear', align_corners=False)
         dm = F.interpolate(damage_map, size=skip.shape[2:], mode='bilinear', align_corners=False)#tačno govori gde se na slici nalaze oštećenja
         x = torch.cat([x, skip, dm], dim=1)   #ovde se spaja>
-                                               #Uvećana sliku iz prethodnog sloja dekodera 
+                                               #Uvećana sliku iz prethodnog sloja dekodera
                                                #detaljne informacije visoke rezolucije direktno iz enkodera (početka mreže) koje pomažu da slika ne bude mutna
         return self.spectral(self.dense_micro(self.conv(x)))#koristi spektral i dense micro da bi iymislila sta ce restaurirati
 
@@ -251,11 +251,11 @@ class GatedSkipConnection(nn.Module):
             nn.Sigmoid()  #pretrvara se u ili 0 ili1  i Ako je vrednost blizu 1, ta mapa karakteristika je važna i treba je propustiti. Ako je blizu 0, ona se blokira jer sadrži nebitne info
         )
 
-    def forward(self, skip: Tensor) -> Tensor: 
+    def forward(self, skip: Tensor) -> Tensor:
         return skip * self.gate(skip)  #Na kraju, originalne karakteristike se množe sa ovim težinama, čime se filtriraju loši podaci pre nego što stignu u vaš
 
 #Ovaj blok ima zadatak da eksplicitno natera mrežu da se fokusira na geometriju i oštre ivice predmeta na slici
-#kada se slika resturira da se ne bi unistili detalljo 
+#kada se slika resturira da se ne bi unistili detalljo
 class EdgeBranch(nn.Module):
     def __init__(self, out_channels: int = 32):
         super().__init__()
@@ -273,7 +273,7 @@ class EdgeBranch(nn.Module):
         )
 
     def forward(self, x: Tensor) -> Tensor:
-        return self.conv(torch.cat([F.conv2d(x, self.kx, padding=1, groups=3), F.conv2d(x, self.ky, padding=1, groups=3)], dim=1))#Mreža spaja horizontalne i vertikalne ivice (dobija se 6 kanala) i propušta ih kroz dodatne konvolucije 
+        return self.conv(torch.cat([F.conv2d(x, self.kx, padding=1, groups=3), F.conv2d(x, self.ky, padding=1, groups=3)], dim=1))#Mreža spaja horizontalne i vertikalne ivice (dobija se 6 kanala) i propušta ih kroz dodatne konvolucije
 #Rezultat je mapa koja jasno naglašava gde se nalaze granice objekata, što pomaže dekoderu da ponovo nacrta oštre konture tamo gde su bile uništene.
 
 
@@ -305,7 +305,7 @@ class ContrastColorRecovery(nn.Module):
         bias = torch.tanh(bias).view(x.shape[0], -1, 1, 1) * 0.5
         adjusted = local_refinement * gain + bias
         return torch.clamp(input_img + adjusted, 0.0, 1.0)  # uzima se originalna slika i nju samo dodaje/oduzima finu korekciju
-      #takodje se saseca sve sto prelazi opseg od 0.0 i 1.0 
+      #takodje se saseca sve sto prelazi opseg od 0.0 i 1.0
 
 # glavni deo modela restauracije
 class Restauracija(nn.Module):
@@ -612,7 +612,7 @@ class FrequencyConsistencyLoss(nn.Module):
         return 0.4 * F.l1_loss(pred_low, tgt_low) + 0.6 * F.l1_loss(pred_high, tgt_high)
 
 #konacni spoj svih funkcija gresaka
-#racuna osnovnu razliku u piskelima 
+#racuna osnovnu razliku u piskelima
 #brzu Furijeovu transformaciju (torch.fft.rfft2) da prebaci sliku u frekvencije. Upoređuje realni i imaginarni deo kako bi osigurala da slika nema digitalnih anomalija i artefakata (periodičnih šuma/linija).
 class RestauracijaLoss(nn.Module):
     def __init__(self, eps: float = 1e-6):
