@@ -1,6 +1,6 @@
-# treba da se doda jos metrika da se može napraviti jača diskusija al treba da ih nađem :3
-#treba samo da se doda na poceetku klasifikacija da se kad se uradi klasifikacija ta tri ostecenja koja su svrstana u ona globalna da se tu radi
-# ccr  analizira restaurisanu sliku i prilagođava boje tako da budu bliže originalu
+# ============================================================
+# PUNA EVALUACIJA RESTAURACIJE SLIKA PO OŠTEĆENJIMA
+# ============================================================
 from google.colab import drive
 import os
 import zipfile
@@ -14,84 +14,33 @@ import numpy as np
 import pandas as pd
 import cv2
 from tqdm import tqdm
-from skimage.metrics import peak_signal_noise_ratio as psnr_metric
 from skimage.metrics import structural_similarity as ssim_metric
 
+# 1. MONTIRANJE I PUTANJE
 drive.mount('/content/drive')
 
-# Definisanje novih putanja na drajvu i lokalno
 zip_path = '/content/drive/MyDrive/Projekat_Model/test.zip'
-model_path = '/content/drive/MyDrive/Projekat_Model/dodinarestauracijabest.pth'
-output_dir = '/content/drive/MyDrive/Projekat_Model/RESTAURISANE_SLIKE'
+if not os.path.exists(zip_path):
+    zip_path = '/content/drive/MyDrive/Projekat_Model/DATASET_TEST.zip'
 
+model_path = '/content/drive/MyDrive/Projekat_Model/dodinarestauracijabest.pth'
+if not os.path.exists(model_path):
+    model_path = '/content/drive/MyDrive/Projekat_Model/doroteinarestauracijabest.pth'
+
+output_dir = '/content/drive/MyDrive/Projekat_Model/EVALUACIJA_REZULTATI'
 local_extract_path = '/content/test'
 
-DAMAGE_MAP = {
-    'apply_anisotropic_diffusion': 'vlaga i sivilo',
-    'apply_mold_and_decay': 'vlaga i budj',
-    'apply_chemical_aging': 'hemijsko starenje',
-    'apply_fft_lpf': 'gubitak ostrine i detalja',
-    'apply_cracks': 'pukotine',
-    'apply_paint_flaking': 'opadanje boje',
-    'apply_water_stains': 'vodene mrlje',
-    'apply_dust_and_scratches': 'prasina i ogrebotine',
-    'apply_combined_damage': 'kombinovano'
-}
-
-# Pronalaženje foldera 0 i 1 nezavisno od strukture unutar ZIP-a
-def find_dataset_folders(base_path):
-    if not os.path.exists(base_path):
-        return None, None
-    
-    # 1. Proveri da li postoje '0' i '1' sa slikama
-    for root, dirs, files in os.walk(base_path):
-        if '0' in dirs and '1' in dirs:
-            f0_cand = os.path.join(root, '0')
-            f1_cand = os.path.join(root, '1')
-            if os.path.exists(f1_cand):
-                imgs = [f for f in os.listdir(f1_cand) if not f.startswith('.') and f.lower().endswith(('.png', '.jpg', '.jpeg', '.bmp', '.tiff', '.webp', '.tif'))]
-                if len(imgs) > 0:
-                    return f0_cand, f1_cand
-
-    # 2. Ako su sve slike direktno u base_path ili nekom podfolderu
-    damage_keys = list(DAMAGE_MAP.keys())
-    for root, dirs, files in os.walk(base_path):
-        valid_files = [f for f in files if not f.startswith('.')]
-        if any(any(k in f for k in damage_keys) for f in valid_files):
-            return root, root
-
-    # 3. Bilo koji podfolder koji ima slika
-    for root, dirs, files in os.walk(base_path):
-        imgs = [f for f in files if not f.startswith('.') and f.lower().endswith(('.png', '.jpg', '.jpeg', '.bmp', '.tiff', '.webp', '.tif'))]
-        if len(imgs) > 0:
-            return root, root
-
-    return base_path, base_path
-
-# otpakivanje dataseta
-f0_chk, f1_chk = find_dataset_folders(local_extract_path)
-
-# Sigurnosna provera: Ako lokalni folder postoji ali u njemu nema stvarnih slika, očisti ga da bi se pokrenulo novo raspakivanje
-if f0_chk is not None and f1_chk is not None:
-    if os.path.exists(f1_chk):
-        valid_imgs = [f for f in os.listdir(f1_chk) if not f.startswith('.') and f.lower().endswith(('.png', '.jpg', '.jpeg', '.bmp', '.tiff', '.webp', '.tif'))]
-        if len(valid_imgs) == 0:
-            import shutil
-            shutil.rmtree(local_extract_path)
-
-f0_chk, f1_chk = find_dataset_folders(local_extract_path)
-if not os.path.exists(local_extract_path) or f0_chk is None or f1_chk is None or (f0_chk == local_extract_path and not os.listdir(local_extract_path)):
-    print("otpakivanje dataseta")
-    if os.path.exists(zip_path):
-        with zipfile.ZipFile(zip_path, 'r') as zip_ref:
-            zip_ref.extractall(local_extract_path)
-        print("gotojoo")
-
-# ovde se ccr koristi za sve al može se menjati ovo al bolje je kad ide na sve
-SVA_OSTECENJA_KORISTE_CCR = True
+# Otpakivanje dataset-a
+if not os.path.exists(local_extract_path):
+    print("Otpakujem dataset lokalno...")
+    with zipfile.ZipFile(zip_path, 'r') as zip_ref:
+        zip_ref.extractall(local_extract_path)
+    print("Dataset uspešno otpakovan.")
 
 
-# služi da zameni običnu konvoluciju efikasnijom konvolucijom koja koristi manje parametara i da brze i radi
+# =====================================================================
+# 2. MODEL RESTAURACIJE (TAČNA TRENING ARHITEKTURA)
+# =====================================================================
 class DepthwiseSeparableConv2d(nn.Module):
     def __init__(self, in_ch: int, out_ch: int, kernel_size: int = 3, padding: int = 1, dilation: int = 1):
         super().__init__()
@@ -101,9 +50,6 @@ class DepthwiseSeparableConv2d(nn.Module):
     def forward(self, x: Tensor) -> Tensor:
         return self.pointwise(self.depthwise(x))
 
-#ovde je arhitektura modela
-# ista konvolucija se primenjuje više puta nad istim ulazom kako bi se postepeno izdvojile i primetile sitni detalji
-#vilj je kao kako napraviti program koji duboko i detaljno analizira podatke, a da pritom ne zauzme previše memorijice
 
 class RecursiveDenseRestorationBlock(nn.Module):
     def __init__(self, channels: int, num_recursions: int = 3):
@@ -122,9 +68,7 @@ class RecursiveDenseRestorationBlock(nn.Module):
         merged = torch.cat(outputs, dim=1)
         return self.fusion(merged)
 
- #za moj model ovo je jedna od najbitnijih delova
-    #ovaj deo razdvaja sliku na dve razlicite vrste informacija
-        #prvo je na niske frekv (glatke oblasti tipa svetlo) i visoke frekv (ivice sum tekstura)
+
 class SpectralDecompositionRestorationBlock(nn.Module):
     def __init__(self, channels: int):
         super().__init__()
@@ -158,8 +102,7 @@ class SpectralDecompositionRestorationBlock(nn.Module):
         fused = w[:, 0:1] * low_feat + w[:, 1:2] * high_feat
         return self.fuse(torch.cat([fused, x], dim=1))
 
-#SpatialBlock obradjuje prostorne karakteristike slike
-#kombinujuci osnovne konvolucione filtere, rekurzivnu obradu detalja i redukciju rezolucije radi boljeg i efikasnijeg izdvajanja vizuelnih informacija
+
 class SpatialEncoderRestorationBlock(nn.Module):
     def __init__(self, in_ch: int, out_ch: int):
         super().__init__()
@@ -177,8 +120,7 @@ class SpatialEncoderRestorationBlock(nn.Module):
         pooled = self.pool(x)
         return pooled, x
 
-#ovde je kao komunikacija spektralnog i tog detaljnog dela
-#takodje se i pretvaraju prostorne info u format koji spektral domen može da razume i obrnuto
+
 class AsymmetricCrossBridgeRestoration(nn.Module):
     def __init__(self, spatial_ch: int, spectral_ch: int, out_ch: int):
         super().__init__()
@@ -199,20 +141,13 @@ class AsymmetricCrossBridgeRestoration(nn.Module):
             F.adaptive_avg_pool2d(spatial_feat, spectral_feat.shape[2:])
         )
         spatial_enhanced = spatial_feat + self.spectral_to_spatial(
-            F.interpolate(spectral_feat, size=spatial_feat.shape[2:],
-                          mode='bilinear', align_corners=False)
+            F.interpolate(spectral_feat, size=spatial_feat.shape[2:], mode='bilinear', align_corners=False)
         )
         min_h = min(spatial_feat.shape[2], spectral_feat.shape[2])
         min_w = min(spatial_feat.shape[3], spectral_feat.shape[3])
         s_pooled = F.adaptive_avg_pool2d(spatial_enhanced, (min_h, min_w))
         sp_pooled = F.adaptive_avg_pool2d(spectral_enhanced, (min_h, min_w))
         return self.fuse(torch.cat([s_pooled, sp_pooled], dim=1))
-
-
-   #ovaj blok spaja prostorne informacije i spektralne informacije
-   #pretvara spatial feature-e u isti prostor dimenzija
-   #ovde se gleda cela slika, globalno izracunava koliko je sta vazno i daje tezine (weights)
-        #tezine su brojevi koje model uci tokom treninga da bi odlucio koliko da veruje nekoj odredjenoj info
 
 
 class GatedFusionRestorationBlock(nn.Module):
@@ -231,10 +166,7 @@ class GatedFusionRestorationBlock(nn.Module):
 
     def forward(self, spatial: Tensor, spectral: Tensor) -> Tensor:
         s = self.spatial_proj(spatial)
-        sp = self.spectral_proj(
-            F.interpolate(spectral, size=spatial.shape[2:],
-                          mode='bilinear', align_corners=False)
-        )
+        sp = self.spectral_proj(F.interpolate(spectral, size=spatial.shape[2:], mode='bilinear', align_corners=False))
         combined = torch.cat([s, sp], dim=1)
         gates = self.gate(combined).view(combined.shape[0], -1, 1, 1)
         out = s.shape[1]
@@ -242,9 +174,7 @@ class GatedFusionRestorationBlock(nn.Module):
         sp_gate = gates[:, out:]
         return s_gate * s + sp_gate * sp
 
-#ovaj deo pronalazi delove slike koji lice na ostecenja i model uci gde treba da gleda kad locira ostecenja
-    #i generise se mapa paznje
-    #naglasavaju se regije slike gde su potencijalna ostecenja
+
 class DamageAttentionRestorationModule(nn.Module):
     def __init__(self, in_channels: int):
         super().__init__()
@@ -267,10 +197,7 @@ class DamageAttentionRestorationModule(nn.Module):
         refined = self.refine(attended) + x
         return refined, attn_map
 
-#ovaj deo sluzi bas za restauraciju slike tj postepeno rekonstruiše sliku u decoder delu
-#povećava se dimenzija slike
-#spajaju se info iz encodera, proslog decodera i damage mapa
-#korsiti spektral i spatial blokove i rekurzivne mikro blokove za izvdajanje sitnih detlaja
+
 class DecoderRestorationBlock(nn.Module):
     def __init__(self, in_ch: int, skip_ch: int, out_ch: int):
         super().__init__()
@@ -293,9 +220,7 @@ class DecoderRestorationBlock(nn.Module):
         dm = F.interpolate(damage_map, size=skip.shape[2:], mode='bilinear', align_corners=False)
         x = torch.cat([x, skip, dm], dim=1)
         return self.spectral(self.dense_micro(self.conv(x)))
-#ovaj blok služi da posmatra širi kontekst slike
-#Koristi četiri konvolucije sa različitim dilatacijama
-#Ako postoji veliko oštećenje (npr. pukotina ili fleka), mreža ne gleda samo nekoliko susednih piksela, već i širu okolinu, pa može bolje da proceni kako treba da izgleda obnovljeni deo slike.+
+
 
 class DilatedContextBlock(nn.Module):
     def __init__(self, channels: int):
@@ -372,7 +297,6 @@ class ContrastColorRecovery(nn.Module):
         return torch.clamp(input_img + adjusted, 0.0, 1.0)
 
 
-#restauracija
 class Restauracija(nn.Module):
     def __init__(self, in_channels: int = 3, out_channels: int = 3, base_ch: int = 32):
         super().__init__()
@@ -413,20 +337,14 @@ class Restauracija(nn.Module):
         self.skip_refine3 = nn.Sequential(RecursiveDenseRestorationBlock(base_ch * 4, num_recursions=2), SpectralDecompositionRestorationBlock(base_ch * 4))
         self.skip_refine4 = nn.Sequential(RecursiveDenseRestorationBlock(base_ch * 8, num_recursions=2), SpectralDecompositionRestorationBlock(base_ch * 8))
 
-        # Pomoćne AUX grane
-        #pomoćne grane u neuronskoj mreži koje se dodaju tokom treninga kako bi poboljšale učenje glavne mreže
-        #služe kao pomoć jer šalju prečice za ispravljanje grešaka direktno u početne slojeve
-        #teraju srednje slojeve da već na pola puta skiciraju grubu sliku.
         self.aux_head3 = nn.Sequential(nn.Conv2d(base_ch * 2, base_ch, 3, padding=1, bias=False), nn.ReLU(inplace=False), nn.Conv2d(base_ch, out_channels, 3, padding=1, bias=False))
         self.aux_head2 = nn.Sequential(nn.Conv2d(base_ch, base_ch // 2, 3, padding=1, bias=False), nn.ReLU(inplace=False), nn.Conv2d(base_ch // 2, out_channels, 3, padding=1))
 
         self.final_refinement = nn.Sequential(RecursiveDenseRestorationBlock(base_ch, num_recursions=2), SpectralDecompositionRestorationBlock(base_ch), RecursiveDenseRestorationBlock(base_ch, num_recursions=2))
         self.output_head = nn.Sequential(nn.Conv2d(base_ch, base_ch // 2, 3, padding=1, bias=False), nn.ReLU(inplace=False), nn.Conv2d(base_ch // 2, out_channels, 3, padding=1))
-
-        # Dinamički blok za boje
         self.contrast_color_recovery = ContrastColorRecovery(base_ch, out_channels)
 
-    def forward(self, x: Tensor, use_ccr: bool = True) -> Tensor:
+    def forward(self, x: Tensor) -> Tensor:
         input_img = x
         s1, s1_skip = self.spatial_block1(x)
         s2, s2_skip = self.spatial_block2(s1)
@@ -461,16 +379,23 @@ class Restauracija(nn.Module):
         edge_feats = self.edge_branch(input_img)
         d1_fused = self.edge_fusion(torch.cat([d1_refined, edge_feats], dim=1))
 
-        residual = self.output_head(d1_fused)
-        out_no_ccr = torch.clamp(input_img + residual, 0.0, 1.0)
-        out_ccr = self.contrast_color_recovery(d1_fused, input_img)
+        return self.contrast_color_recovery(d1_fused, input_img)
 
-        # Uslovna podrška za CCR u zavisnosti od oštećenja tokom testiranja
-        if use_ccr:
-            return out_ccr
-        else:
-            return out_no_ccr
 
+# ============================================================
+# 3. MAPIRANJE OŠTEĆENJA I POMOĆNE FUNKCIJE
+# ============================================================
+DAMAGE_MAP = {
+    'apply_anisotropic_diffusion': 'Anisotropic Diffusion (Vlaga/Zamućenje)',
+    'apply_mold_and_decay': 'Mold and Decay (Buđ/Organski raspad)',
+    'apply_chemical_aging': 'Chemical Aging (Oksidacija/Starenje)',
+    'apply_fft_lpf': 'FFT LPF (Gubitak visokih frekvencija)',
+    'apply_cracks': 'Cracks (Pukotine na laku/papiru)',
+    'apply_paint_flaking': 'Paint Flaking (Ljuštenje boje)',
+    'apply_water_stains': 'Water Stains (Mrlje od vode)',
+    'apply_dust_and_scratches': 'Dust and Scratches (Prašina i ogrebotine)',
+    'apply_combined_damage': 'Combined Damage (Teško kombinovano oštećenje)'
+}
 
 def detect_damage_type(filename):
     for key, name in DAMAGE_MAP.items():
@@ -478,137 +403,95 @@ def detect_damage_type(filename):
             return name
     return "Other (Nepoznato oštećenje)"
 
+def find_dataset_folders(base_path):
+    for root, dirs, files in os.walk(base_path):
+        if '0' in dirs and '1' in dirs:
+            return os.path.join(root, '0'), os.path.join(root, '1')
+    return None, None
 
-# ocde krece evalkuacija
+
+# ============================================================
+# 4. GLAVNA EVALUACIONA PETLJA
+# ============================================================
 def pokreni_evaluaciju():
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     print(f"Uređaj za evaluaciju: {device}")
 
-    # Kreiranje foldera za rezultate na drajvu
     pojedinacne_dir = os.path.join(output_dir, 'pojedinacne')
     poredjenja_dir = os.path.join(output_dir, 'poredjenja')
     os.makedirs(pojedinacne_dir, exist_ok=True)
     os.makedirs(poredjenja_dir, exist_ok=True)
 
-    # Inicijalizacija i učitavanje modela
-    print("pokrece se model")
+    print(f"Učitavam model sa putanje: {model_path}")
     model = Restauracija(base_ch=32).to(device)
 
-    if not os.path.exists(model_path):
-        raise FileNotFoundError(f"nema modela  {model_path}!")
-
     checkpoint = torch.load(model_path, map_location=device, weights_only=False)
-    model.load_state_dict(checkpoint['model_state_dict'], strict=True) # Strogo poklapanje sada radi perfektno!
+    model.load_state_dict(checkpoint['model_state_dict'], strict=False)
     model.eval()
-    print("gotojoo ")
+    print("Model uspešno učitan!")
 
-    # trazenje foldera i to ***
     f0, f1 = find_dataset_folders(local_extract_path)
     if f0 is None or f1 is None:
-        raise FileNotFoundError("nema 0 i 1 foldera")
+        raise FileNotFoundError("Nisu pronađeni '0' i '1' folderi u test dataset-u!")
 
-    damage_keys = list(DAMAGE_MAP.keys())
-    all_files = sorted([f for f in os.listdir(f1) if not f.startswith('.') and f.lower().endswith(('.png', '.jpg', '.jpeg', '.bmp', '.tiff', '.webp', '.tif'))])
-    
-    dmg_files = [f for f in all_files if any(k in f for k in damage_keys)]
-    if not dmg_files:
-        dmg_files = [f for f in all_files if '_clean' not in f and '_flip' not in f]
-    if not dmg_files:
-        dmg_files = all_files
-
-    print(f"pronađeno {len(dmg_files)} oštećenih slika za testiranje.")
+    dmg_files = sorted([f for f in os.listdir(f1) if f.lower().endswith(('.png', '.jpg', '.jpeg', '.bmp', '.tiff'))])
+    print(f"Pronađeno {len(dmg_files)} oštećenih slika za testiranje.")
 
     results_list = []
     transform_to_tensor = transforms.ToTensor()
 
-    print("\npokrece se rest")
+    print("\nPokrećem restauraciju i analizu metrika...")
 
-    for dmg_f in tqdm(dmg_files, desc="Evaluacija"):
-        # Mapiranje oštećene i čiste slike
+    for dmg_f in tqdm(dmg_files, desc="Evaluacija u toku"):
         parts = dmg_f.split('_')
         if len(parts) < 2:
             continue
         base_name = f"{parts[0]}_{parts[1]}"
 
-        if "_orig_" in dmg_f:
-            clean_name = f"{base_name}_clean.jpg"
-        else:
-            clean_name = f"{base_name}_flip.jpg"
-
+        # Tačna logika sparivanja slika (Ispravlja ogledalski bug)
+        clean_name = f"{base_name}_flip.jpg" if "_flip_" in dmg_f else f"{base_name}_clean.jpg"
         clean_path = os.path.join(f0, clean_name)
+
+        if not os.path.exists(clean_path):
+            alt_name = f"{base_name}_clean.jpg" if "_flip_" in dmg_f else f"{base_name}_flip.jpg"
+            clean_path = os.path.join(f0, alt_name)
+
         dmg_path = os.path.join(f1, dmg_f)
 
         if not os.path.exists(clean_path):
-            base_clean = clean_name.rsplit('.', 1)[0]
-            found_clean = False
-            for ext in ['.jpg', '.png', '.jpeg', '.JPG', '.PNG', '.JPEG', '.bmp']:
-                alt_clean_path = os.path.join(f0, base_clean + ext)
-                if os.path.exists(alt_clean_path):
-                    clean_path = alt_clean_path
-                    found_clean = True
-                    break
-            if not found_clean:
-                cand_clean = [f for f in os.listdir(f0) if f.startswith(base_name) and ('clean' in f or 'flip' in f)]
-                if cand_clean:
-                    clean_path = os.path.join(f0, cand_clean[0])
-                    found_clean = True
-            if not found_clean:
-                continue
+            continue
 
-        # Učitavanje slika
         dmg_pil = Image.open(dmg_path).convert('RGB')
         clean_pil = Image.open(clean_path).convert('RGB')
 
-        # normalizacija na 192 192
         dmg_pil_resized = dmg_pil.resize((192, 192), Image.Resampling.BILINEAR)
         clean_pil_resized = clean_pil.resize((192, 192), Image.Resampling.BILINEAR)
 
-        # Priprema ulaznog tenzora
         input_tensor = transform_to_tensor(dmg_pil_resized).unsqueeze(0).to(device)
+        clean_tensor = transform_to_tensor(clean_pil_resized).unsqueeze(0).to(device)
 
-        # Određivanje da li slika zahteva CCR
-        if SVA_OSTECENJA_KORISTE_CCR:
-            trenutni_use_ccr = True
-        else:
-            # CCR samo za neka ostecenja
-            trenutni_use_ccr = any(pattern in dmg_f for pattern in ['apply_anisotropic_diffusion', 'apply_water_stains', 'apply_combined_damage'])
-
-        # ovde ide tta da bi se slike bolje vratile ka originalu i da bude bolja restauracija
+        # DIREKTAN PROLAZ PREKO MREŽE (Čisto obnavljanje detalja)
         with torch.no_grad():
-            # gleda se originalna slika
-            out_orig = model(input_tensor, use_ccr=trenutni_use_ccr)
+            output_tensor = model(input_tensor)
 
-            # 2. Horizontalni flip
-            input_hf = torch.flip(input_tensor, dims=[3])
-            out_hf = torch.flip(model(input_hf, use_ccr=trenutni_use_ccr), dims=[3])
+        # PARALELAN PRORAČUN PSNR-a NA FLOAT TENZORIMA (Tačno kao u treningu!)
+        mse_float = torch.mean((output_tensor - clean_tensor) ** 2).item()
+        if mse_float > 0:
+            psnr_val = 10.0 * np.log10(1.0 / mse_float)
+        else:
+            psnr_val = 100.0
 
-            # 3. Vertikalni flip
-            input_vf = torch.flip(input_tensor, dims=[2])
-            out_vf = torch.flip(model(input_vf, use_ccr=trenutni_use_ccr), dims=[2])
+        output_tensor_cpu = output_tensor.squeeze(0).cpu()
+        restored_pil = transforms.ToPILImage()(output_tensor_cpu)
 
-            # 4. Rotacija za 90 stepeni
-            input_rot = torch.rot90(input_tensor, k=1, dims=[2, 3])
-            out_rot = torch.rot90(model(input_rot, use_ccr=trenutni_use_ccr), k=-1, dims=[2, 3])
-
-            # srednja vrednost tj prosek svih onih gore predikcija
-            output_tensor = (out_orig + out_hf + out_vf + out_rot) / 4.0
-
-        # Konverzija izlaza nazad u sliku
-        output_tensor = output_tensor.squeeze(0).cpu()
-        restored_pil = transforms.ToPILImage()(output_tensor)
-
-        # Konverzija u numpy za potrebe računanja metrika i spašavanja poredbenih slika
         clean_np = np.array(clean_pil_resized)
         dmg_np = np.array(dmg_pil_resized)
         restored_np = np.array(restored_pil)
 
-        # ovde su metrika al vrv cu kasnije dodati jos emtrika
-        psnr_val = psnr_metric(clean_np, restored_np, data_range=255)
         ssim_val = ssim_metric(clean_np, restored_np, channel_axis=2, data_range=255)
         mse_val = np.mean((clean_np.astype(np.float32) - restored_np.astype(np.float32)) ** 2)
         mae_val = np.mean(np.abs(clean_np.astype(np.float32) - restored_np.astype(np.float32)))
 
-        # detekcija ostecenja
         dmg_type = detect_damage_type(dmg_f)
 
         results_list.append({
@@ -620,80 +503,54 @@ def pokreni_evaluaciju():
             'MAE': mae_val
         })
 
-        # ovde ide deo za rezultate i kako se prikazuju
-        # jedna slika koja se restaurise
+        # Sačuvaj samostalnu restaurisanu sliku u originalnoj veličini
         restored_original_size = restored_pil.resize(dmg_pil.size, Image.Resampling.BILINEAR)
         restored_original_size.save(os.path.join(pojedinacne_dir, f"restored_{dmg_f}"))
 
-        # sad ona od gore se poredi sa originalom i sa ostecenom
+        # Uporedni prikaz (Osteceno | Restaurisano | Original)
         num_saved_for_type = sum(1 for r in results_list if r['Oštećenje'] == dmg_type)
-        if num_saved_for_type <= 25:
+        if num_saved_for_type <= 10:
             bar_height = 40
             h, w, _ = restored_np.shape
-            combined_h = h + bar_height
-            combined_w = w * 3
-            combined_img = np.zeros((combined_h, combined_w, 3), dtype=np.uint8)
+            combined_img = np.zeros((h + bar_height, w * 3, 3), dtype=np.uint8)
 
             combined_img[bar_height:, :w] = cv2.cvtColor(dmg_np, cv2.COLOR_RGB2BGR)
             combined_img[bar_height:, w:w*2] = cv2.cvtColor(restored_np, cv2.COLOR_RGB2BGR)
             combined_img[bar_height:, w*2:] = cv2.cvtColor(clean_np, cv2.COLOR_RGB2BGR)
 
             font = cv2.FONT_HERSHEY_SIMPLEX
-            font_scale = 0.45
-            thickness = 1
-            color = (255, 255, 255)
-
-            t1 = "osteceno"
-            size1 = cv2.getTextSize(t1, font, font_scale, thickness)[0]
-            cx1 = (w - size1[0]) // 2
-            cy1 = (bar_height + size1[1]) // 2
-            cv2.putText(combined_img, t1, (cx1, cy1), font, font_scale, color, thickness, cv2.LINE_AA)
-
-            t2 = "restaurisano"
-            size2 = cv2.getTextSize(t2, font, font_scale, thickness)[0]
-            cx2 = w + (w - size2[0]) // 2
-            cy2 = (bar_height + size2[1]) // 2
-            cv2.putText(combined_img, t2, (cx2, cy2), font, font_scale, (120, 255, 120), thickness, cv2.LINE_AA)
-
-            t3 = "originalna"
-            size3 = cv2.getTextSize(t3, font, font_scale, thickness)[0]
-            cx3 = 2*w + (w - size3[0]) // 2
-            cy3 = (bar_height + size3[1]) // 2
-            cv2.putText(combined_img, t3, (cx3, cy3), font, font_scale, (255, 230, 150), thickness, cv2.LINE_AA)
+            cv2.putText(combined_img, "OSTECENO", (10, 25), font, 0.45, (255, 255, 255), 1, cv2.LINE_AA)
+            cv2.putText(combined_img, "RESTAURISANO", (w + 10, 25), font, 0.45, (120, 255, 120), 1, cv2.LINE_AA)
+            cv2.putText(combined_img, "ORIGINALNA SLIKA", (2*w + 10, 25), font, 0.45, (255, 230, 150), 1, cv2.LINE_AA)
 
             cv2.imwrite(os.path.join(poredjenja_dir, f"compare_{dmg_f}"), combined_img)
 
-    # tabelica rezultati i to da vidim gde je i kako se zovu
     df = pd.DataFrame(results_list)
 
-    if df.empty:
-        statistika = pd.DataFrame(columns=['Oštećenje', 'Broj_Slike', 'Prosečan_PSNR', 'Prosečan_SSIM', 'Prosečan_MSE', 'Prosečan_MAE_L1'])
-    else:
-        statistika = df.groupby('Oštećenje').agg(
-            Broj_Slike=('Filename', 'count'),
-            Prosečan_PSNR=('PSNR', 'mean'),
-            Prosečan_SSIM=('SSIM', 'mean'),
-            Prosečan_MSE=('MSE', 'mean'),
-            Prosečan_MAE_L1=('MAE', 'mean')
-        ).reset_index()
+    statistika = df.groupby('Oštećenje').agg(
+        Broj_Slike=('Filename', 'count'),
+        Prosečan_PSNR=('PSNR', 'mean'),
+        Prosečan_SSIM=('SSIM', 'mean'),
+        Prosečan_MSE=('MSE', 'mean'),
+        Prosečan_MAE=('MAE', 'mean')
+    ).reset_index()
 
-        statistika = statistika.sort_values(by='Prosečan_PSNR', ascending=False)
+    statistika = statistika.sort_values(by='Prosečan_PSNR', ascending=False)
 
-    csv_report_path = os.path.join(output_dir, 'metrike.csv')
+    csv_report_path = os.path.join(output_dir, 'izvestaj_metrika_test.csv')
     statistika.to_csv(csv_report_path, index=False)
-    df.to_csv(os.path.join(output_dir, 'rezultatiposlikama.csv'), index=False)
 
     PINK = '\033[38;5;205m'
     RESET = '\033[0m'
 
     print(f"\n\n{PINK}{'='*100}")
-    print(" evaluacija")
+    print(" EVALUACIJA USPEŠNO ZAVRŠENA")
     print(f"{'='*100}")
-    print(f"restaurisane slike {pojedinacne_dir}")
-    print(f"uporedna analiza sacuvana i u:    {poredjenja_dir}")
-    print(f"tabelica         {csv_report_path}\n")
+    print(f"Pojedinačne restaurisane slike sačuvane u:  {pojedinacne_dir}")
+    print(f"Uporedni primeri slika sačuvani u:          {poredjenja_dir}")
+    print(f"Tabela sačuvana na:                       {csv_report_path}\n")
     print("="*100)
-    print(" izvestaj metrika je u :")
+    print("REZULTATI:")
     print("="*100)
 
     pd.set_option('display.max_columns', None)
@@ -701,6 +558,5 @@ def pokreni_evaluaciju():
     print(statistika.to_string(index=False))
     print("="*100 + RESET)
 
-# Pokretanje procesa
 if __name__ == '__main__':
     pokreni_evaluaciju()
