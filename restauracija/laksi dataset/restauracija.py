@@ -706,9 +706,9 @@ def train_restauracija(
         for param_group in optimizer.param_groups:
             param_group['lr'] = 5e-5
         scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=epochs_to_train, eta_min=1e-6)
-        print(f"Nastavak od epohe {start_epoch+1}. Najbolji rezultat za PSNR: {best_psnr:.2f} dB")
+        print(f"nastavak od epohe br {start_epoch+1}. najbolji rezultat za psnr {best_psnr:.2f} dB")
     else:
-        print("Restauracija ide od nule ili nema sačuvanog modela na toj putanji.")
+        print("nema mmodela")
 
     accumulation_steps = 3
     optimizer.zero_grad()
@@ -765,7 +765,7 @@ def train_restauracija(
         avg_psnr = total_psnr / max(num_batches, 1)
         scheduler.step()
 
-        print(f"Restauracija | Epoha {epoch+1:02d} | Loss: {epoch_loss:.5f} | Val PSNR: {avg_psnr:.2f} dB")
+        print(f"restauracija | Epoha {epoch+1:02d} | Loss: {epoch_loss:.5f} | Val PSNR: {avg_psnr:.2f} dB")
 
         torch.save({
             'epoch': epoch + 1,
@@ -780,7 +780,7 @@ def train_restauracija(
                 'model_state_dict': model.state_dict(),
                 'best_psnr': best_psnr,
             }, best_checkpoint_path)
-            print(f"  ★ Novi najbolji model sačuvan u {best_checkpoint_path} (PSNR: {best_psnr:.2f} dB)")
+            print(f"  ★ novi best {best_checkpoint_path} (PSNR: {best_psnr:.2f} dB)")
 
     return model
 
@@ -795,13 +795,13 @@ if __name__ == '__main__':
 
     if not os.path.exists(lokalni_trening_path):
         if os.path.exists(drive_trening_zip):
-            print(f"Otpakivanje {drive_trening_zip} u {lokalni_trening_path}...")
+            print(f"otpakuje se  {drive_trening_zip} u {lokalni_trening_path}...")
             get_ipython().system(f'unzip -q "{drive_trening_zip}" -d "{lokalni_trening_path}"')
-            print("Otpakivanje završeno.")
+            print("gotojooo")
         elif os.path.exists("/content/drive/MyDrive/Projekat_Model/trening"):
             lokalni_trening_path = "/content/drive/MyDrive/Projekat_Model/trening"
 
-    print(f"\nPokretanje nastavka treninga za model: {restauracija_path}...")
+    print(f"\nkrece trening {restauracija_path}...")
     if os.path.exists(lokalni_trening_path):
         restoracioni_model = train_restauracija(
             dataset_dir=lokalni_trening_path,
@@ -813,4 +813,4 @@ if __name__ == '__main__':
             resume=True
         )
     else:
-        print(f"Dataset nije pronađen na putanji {lokalni_trening_path}")
+        print(f"nema dataseta na {lokalni_trening_path}")
