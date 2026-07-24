@@ -20,18 +20,72 @@ from skimage.metrics import structural_similarity as ssim_metric
 drive.mount('/content/drive')
 
 # Definisanje novih putanja na drajvu i lokalno
-zip_path = '/content/drive/MyDrive/Projekat_Model/test.zip'
-model_path = '/content/drive/MyDrive/Projekat_Model/dodinarestauracijabest.pth'
+zip_path = '/content/drive/MyDrive/Projekat_Model/DATASET_TEST.zip'
+model_path = '/content/drive/MyDrive/Projekat_Model/doroteinarestauracijabest.pth'
 output_dir = '/content/drive/MyDrive/Projekat_Model/RESTAURISANE_SLIKE'
 
 local_extract_path = '/content/test'
 
+DAMAGE_MAP = {
+    'apply_anisotropic_diffusion': 'vlaga i sivilo',
+    'apply_mold_and_decay': 'vlaga i budj',
+    'apply_chemical_aging': 'hemijsko starenje',
+    'apply_fft_lpf': 'gubitak ostrine i detalja',
+    'apply_cracks': 'pukotine',
+    'apply_paint_flaking': 'opadanje boje',
+    'apply_water_stains': 'vodene mrlje',
+    'apply_dust_and_scratches': 'prasina i ogrebotine',
+    'apply_combined_damage': 'kombinovano'
+}
+
+# Pronalaženje foldera 0 i 1 nezavisno od strukture unutar ZIP-a
+def find_dataset_folders(base_path):
+    if not os.path.exists(base_path):
+        return None, None
+    
+    # 1. Proveri da li postoje '0' i '1' sa slikama
+    for root, dirs, files in os.walk(base_path):
+        if '0' in dirs and '1' in dirs:
+            f0_cand = os.path.join(root, '0')
+            f1_cand = os.path.join(root, '1')
+            if os.path.exists(f1_cand):
+                imgs = [f for f in os.listdir(f1_cand) if not f.startswith('.') and f.lower().endswith(('.png', '.jpg', '.jpeg', '.bmp', '.tiff', '.webp', '.tif'))]
+                if len(imgs) > 0:
+                    return f0_cand, f1_cand
+
+    # 2. Ako su sve slike direktno u base_path ili nekom podfolderu
+    damage_keys = list(DAMAGE_MAP.keys())
+    for root, dirs, files in os.walk(base_path):
+        valid_files = [f for f in files if not f.startswith('.')]
+        if any(any(k in f for k in damage_keys) for f in valid_files):
+            return root, root
+
+    # 3. Bilo koji podfolder koji ima slika
+    for root, dirs, files in os.walk(base_path):
+        imgs = [f for f in files if not f.startswith('.') and f.lower().endswith(('.png', '.jpg', '.jpeg', '.bmp', '.tiff', '.webp', '.tif'))]
+        if len(imgs) > 0:
+            return root, root
+
+    return base_path, base_path
+
 # otpakivanje dataseta
-if not os.path.exists(local_extract_path):
+f0_chk, f1_chk = find_dataset_folders(local_extract_path)
+
+# Sigurnosna provera: Ako lokalni folder postoji ali u njemu nema stvarnih slika, očisti ga da bi se pokrenulo novo raspakivanje
+if f0_chk is not None and f1_chk is not None:
+    if os.path.exists(f1_chk):
+        valid_imgs = [f for f in os.listdir(f1_chk) if not f.startswith('.') and f.lower().endswith(('.png', '.jpg', '.jpeg', '.bmp', '.tiff', '.webp', '.tif'))]
+        if len(valid_imgs) == 0:
+            import shutil
+            shutil.rmtree(local_extract_path)
+
+f0_chk, f1_chk = find_dataset_folders(local_extract_path)
+if not os.path.exists(local_extract_path) or f0_chk is None or f1_chk is None or (f0_chk == local_extract_path and not os.listdir(local_extract_path)):
     print("otpakivanje dataseta")
-    with zipfile.ZipFile(zip_path, 'r') as zip_ref:
-        zip_ref.extractall(local_extract_path)
-    print("gotojoo")
+    if os.path.exists(zip_path):
+        with zipfile.ZipFile(zip_path, 'r') as zip_ref:
+            zip_ref.extractall(local_extract_path)
+        print("gotojoo")
 
 # ovde se ccr koristi za sve al može se menjati ovo al bolje je kad ide na sve
 SVA_OSTECENJA_KORISTE_CCR = True
@@ -49,6 +103,8 @@ class DepthwiseSeparableConv2d(nn.Module):
 
 #ovde je arhitektura modela
 # ista konvolucija se primenjuje više puta nad istim ulazom kako bi se postepeno izdvojile i primetile sitni detalji
+#vilj je kao kako napraviti program koji duboko i detaljno analizira podatke, a da pritom ne zauzme previše memorijice
+
 class RecursiveDenseRestorationBlock(nn.Module):
     def __init__(self, channels: int, num_recursions: int = 3):
         super().__init__()
@@ -316,9 +372,7 @@ class ContrastColorRecovery(nn.Module):
         return torch.clamp(input_img + adjusted, 0.0, 1.0)
 
 
-# =====================================================================
-# 3. KONAČNI RESTAURACIONI MODEL (SAVRŠENO REPLICIRAN IZ TRENING KODA)
-# =====================================================================
+#restauracija
 class Restauracija(nn.Module):
     def __init__(self, in_channels: int = 3, out_channels: int = 3, base_ch: int = 32):
         super().__init__()
@@ -360,6 +414,9 @@ class Restauracija(nn.Module):
         self.skip_refine4 = nn.Sequential(RecursiveDenseRestorationBlock(base_ch * 8, num_recursions=2), SpectralDecompositionRestorationBlock(base_ch * 8))
 
         # Pomoćne AUX grane
+        #pomoćne grane u neuronskoj mreži koje se dodaju tokom treninga kako bi poboljšale učenje glavne mreže
+        #služe kao pomoć jer šalju prečice za ispravljanje grešaka direktno u početne slojeve
+        #teraju srednje slojeve da već na pola puta skiciraju grubu sliku.
         self.aux_head3 = nn.Sequential(nn.Conv2d(base_ch * 2, base_ch, 3, padding=1, bias=False), nn.ReLU(inplace=False), nn.Conv2d(base_ch, out_channels, 3, padding=1, bias=False))
         self.aux_head2 = nn.Sequential(nn.Conv2d(base_ch, base_ch // 2, 3, padding=1, bias=False), nn.ReLU(inplace=False), nn.Conv2d(base_ch // 2, out_channels, 3, padding=1))
 
@@ -415,33 +472,11 @@ class Restauracija(nn.Module):
             return out_no_ccr
 
 
-# ============================================================
-# 4. POMOĆNE FUNKCIJE ZA MAPIRANJE I EVALUACIJU
-# ============================================================
-DAMAGE_MAP = {
-    'apply_anisotropic_diffusion': 'Anisotropic Diffusion (Vlaga/Zamućenje)',
-    'apply_mold_and_decay': 'Mold and Decay (Buđ/Organski raspad)',
-    'apply_chemical_aging': 'Chemical Aging (Oksidacija/Starenje)',
-    'apply_fft_lpf': 'FFT LPF (Gubitak visokih frekvencija)',
-    'apply_cracks': 'Cracks (Pukotine na laku/papiru)',
-    'apply_paint_flaking': 'Paint Flaking (Ljuštenje boje)',
-    'apply_water_stains': 'Water Stains (Mrlje od vode)',
-    'apply_dust_and_scratches': 'Dust and Scratches (Prašina i ogrebotine)',
-    'apply_combined_damage': 'Combined Damage (Teško kombinovano oštećenje)'
-}
-
 def detect_damage_type(filename):
     for key, name in DAMAGE_MAP.items():
         if key in filename:
             return name
     return "Other (Nepoznato oštećenje)"
-
-# Pronalaženje foldera 0 i 1 nezavisno od strukture unutar ZIP-a
-def find_dataset_folders(base_path):
-    for root, dirs, files in os.walk(base_path):
-        if '0' in dirs and '1' in dirs:
-            return os.path.join(root, '0'), os.path.join(root, '1')
-    return None, None
 
 
 # ocde krece evalkuacija
@@ -456,31 +491,39 @@ def pokreni_evaluaciju():
     os.makedirs(poredjenja_dir, exist_ok=True)
 
     # Inicijalizacija i učitavanje modela
-    print("Inicijalizujem model...")
+    print("pokrece se model")
     model = Restauracija(base_ch=32).to(device)
 
     if not os.path.exists(model_path):
-        raise FileNotFoundError(f"Greška: Model nije pronađen na putanji {model_path}!")
+        raise FileNotFoundError(f"nema modela  {model_path}!")
 
     checkpoint = torch.load(model_path, map_location=device, weights_only=False)
     model.load_state_dict(checkpoint['model_state_dict'], strict=True) # Strogo poklapanje sada radi perfektno!
     model.eval()
-    print("Model uspešno učitan (strict=True, bez ikakvih neslaganja).")
+    print("gotojoo ")
 
     # trazenje foldera i to ***
     f0, f1 = find_dataset_folders(local_extract_path)
     if f0 is None or f1 is None:
-        raise FileNotFoundError("Greška: Nije pronađena ispravna struktura '0' i '1' foldera unutar otpakovanog dataset-a!")
+        raise FileNotFoundError("nema 0 i 1 foldera")
 
-    dmg_files = sorted([f for f in os.listdir(f1) if f.lower().endswith(('.png', '.jpg', '.jpeg', '.bmp', '.tiff'))])
-    print(f"Pronađeno {len(dmg_files)} oštećenih slika za testiranje.")
+    damage_keys = list(DAMAGE_MAP.keys())
+    all_files = sorted([f for f in os.listdir(f1) if not f.startswith('.') and f.lower().endswith(('.png', '.jpg', '.jpeg', '.bmp', '.tiff', '.webp', '.tif'))])
+    
+    dmg_files = [f for f in all_files if any(k in f for k in damage_keys)]
+    if not dmg_files:
+        dmg_files = [f for f in all_files if '_clean' not in f and '_flip' not in f]
+    if not dmg_files:
+        dmg_files = all_files
+
+    print(f"pronađeno {len(dmg_files)} oštećenih slika za testiranje.")
 
     results_list = []
     transform_to_tensor = transforms.ToTensor()
 
-    print("\nPokrećem restauraciju i analizu metrika sa TTA optimizacijom...")
+    print("\npokrece se rest")
 
-    for dmg_f in tqdm(dmg_files, desc="Evaluacija (TTA Mode)"):
+    for dmg_f in tqdm(dmg_files, desc="Evaluacija"):
         # Mapiranje oštećene i čiste slike
         parts = dmg_f.split('_')
         if len(parts) < 2:
@@ -496,7 +539,21 @@ def pokreni_evaluaciju():
         dmg_path = os.path.join(f1, dmg_f)
 
         if not os.path.exists(clean_path):
-            continue
+            base_clean = clean_name.rsplit('.', 1)[0]
+            found_clean = False
+            for ext in ['.jpg', '.png', '.jpeg', '.JPG', '.PNG', '.JPEG', '.bmp']:
+                alt_clean_path = os.path.join(f0, base_clean + ext)
+                if os.path.exists(alt_clean_path):
+                    clean_path = alt_clean_path
+                    found_clean = True
+                    break
+            if not found_clean:
+                cand_clean = [f for f in os.listdir(f0) if f.startswith(base_name) and ('clean' in f or 'flip' in f)]
+                if cand_clean:
+                    clean_path = os.path.join(f0, cand_clean[0])
+                    found_clean = True
+            if not found_clean:
+                continue
 
         # Učitavanje slika
         dmg_pil = Image.open(dmg_path).convert('RGB')
@@ -533,7 +590,7 @@ def pokreni_evaluaciju():
             input_rot = torch.rot90(input_tensor, k=1, dims=[2, 3])
             out_rot = torch.rot90(model(input_rot, use_ccr=trenutni_use_ccr), k=-1, dims=[2, 3])
 
-            # Srednja vrednost (prosek) svih predikcija
+            # srednja vrednost tj prosek svih onih gore predikcija
             output_tensor = (out_orig + out_hf + out_vf + out_rot) / 4.0
 
         # Konverzija izlaza nazad u sliku
@@ -609,19 +666,22 @@ def pokreni_evaluaciju():
     # tabelica rezultati i to da vidim gde je i kako se zovu
     df = pd.DataFrame(results_list)
 
-    statistika = df.groupby('Oštećenje').agg(
-        Broj_Slike=('Filename', 'count'),
-        Prosečan_PSNR=('PSNR', 'mean'),
-        Prosečan_SSIM=('SSIM', 'mean'),
-        Prosečan_MSE=('MSE', 'mean'),
-        Prosečan_MAE_L1=('MAE', 'mean')
-    ).reset_index()
+    if df.empty:
+        statistika = pd.DataFrame(columns=['Oštećenje', 'Broj_Slike', 'Prosečan_PSNR', 'Prosečan_SSIM', 'Prosečan_MSE', 'Prosečan_MAE_L1'])
+    else:
+        statistika = df.groupby('Oštećenje').agg(
+            Broj_Slike=('Filename', 'count'),
+            Prosečan_PSNR=('PSNR', 'mean'),
+            Prosečan_SSIM=('SSIM', 'mean'),
+            Prosečan_MSE=('MSE', 'mean'),
+            Prosečan_MAE_L1=('MAE', 'mean')
+        ).reset_index()
 
-    statistika = statistika.sort_values(by='Prosečan_PSNR', ascending=False)
+        statistika = statistika.sort_values(by='Prosečan_PSNR', ascending=False)
 
-    csv_report_path = os.path.join(output_dir, 'izvestaj_metrika_test.csv')
+    csv_report_path = os.path.join(output_dir, 'metrike.csv')
     statistika.to_csv(csv_report_path, index=False)
-    df.to_csv(os.path.join(output_dir, 'detaljni_rezultati_po_slikama.csv'), index=False)
+    df.to_csv(os.path.join(output_dir, 'rezultatiposlikama.csv'), index=False)
 
     PINK = '\033[38;5;205m'
     RESET = '\033[0m'
