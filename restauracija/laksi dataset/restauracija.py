@@ -242,7 +242,6 @@ class DilatedContextBlock(nn.Module):
 
 #kao neki filter koji propusta pametne delove
 #da se ne bi slika direktno iy enkodera prenela u dekoder jer bi prenela [um onda ide ovako
-]
 class GatedSkipConnection(nn.Module):
     def __init__(self, channels: int):
         super().__init__()
@@ -533,7 +532,7 @@ def gaussian(window_size: int, sigma: float) -> Tensor:
     gauss = torch.tensor([np.exp(-(x - window_size // 2) ** 2 / float(2 * sigma ** 2)) for x in range(window_size)])
     return gauss / gauss.sum()
 
-
+#Upoređuje ivice rekonstruisane slike sa ivicama originala. Ako su ivice na rekonstruisanoj slici mutne ili nedostaju, ova greška raste
 class SobelLoss(nn.Module):
     def __init__(self):
         super().__init__()
@@ -551,7 +550,7 @@ class SobelLoss(nn.Module):
         gy_t = F.conv2d(t_gray, self.ky, padding=1)
         return F.l1_loss(gx_p, gx_t) + F.l1_loss(gy_p, gy_t)
 
-
+#Upoređuje isključivo te zamućene mape boja. Time osigurava da restaurirani deo slike ima savršeno pogođen ton i da se ne razlikuje od okoline (npr. da trava bude iste nijanse zelene)
 class ColorLoss(nn.Module):
     def __init__(self):
         super().__init__()
@@ -561,7 +560,7 @@ class ColorLoss(nn.Module):
         target_blur = F.avg_pool2d(target, kernel_size=5, stride=1, padding=2)
         return F.l1_loss(pred_blur, target_blur)
 
-
+# Mreža mora da pogodi i krupne oblike i najsitnije teksture na slici da bi ukupna greška bila mala.
 class CustomPerceptualLoss(nn.Module):
     def __init__(self):
         super().__init__()
@@ -591,7 +590,7 @@ class CustomPerceptualLoss(nn.Module):
             loss += F.l1_loss(pf, tf)
         return loss / len(pred_feats)
 
-
+#ikseli gde mreža već dobro radi dobijaju malu težinu, a delovi gde žestoko greši dobijaju veliku težinu. Mreža se tako fokusira na popravljanje najtežih grešaka.
 class SoftHardExampleMiningLoss(nn.Module):
     def __init__(self):
         super().__init__()
@@ -600,7 +599,7 @@ class SoftHardExampleMiningLoss(nn.Module):
         error_map = torch.abs(pred - target).mean(dim=1, keepdim=True).detach()
         return 1.0 + torch.sigmoid((error_map - error_map.mean()) / (error_map.std() + 1e-6))
 
-
+#Daje veću važnost oštrim detaljima (težina 0.6) nego glatkim površinama (težina 0.4), sprečavajući da slika ispadne zamućena.
 class FrequencyConsistencyLoss(nn.Module):
     def __init__(self):
         super().__init__()
@@ -612,7 +611,9 @@ class FrequencyConsistencyLoss(nn.Module):
         tgt_high = target - tgt_low
         return 0.4 * F.l1_loss(pred_low, tgt_low) + 0.6 * F.l1_loss(pred_high, tgt_high)
 
-
+#konacni spoj svih funkcija gresaka
+#racuna osnovnu razliku u piskelima 
+#brzu Furijeovu transformaciju (torch.fft.rfft2) da prebaci sliku u frekvencije. Upoređuje realni i imaginarni deo kako bi osigurala da slika nema digitalnih anomalija i artefakata (periodičnih šuma/linija).
 class RestauracijaLoss(nn.Module):
     def __init__(self, eps: float = 1e-6):
         super().__init__()
