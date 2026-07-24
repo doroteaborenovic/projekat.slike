@@ -1,6 +1,4 @@
-# ============================================================
-# PUNA EVALUACIJA RESTAURACIJE SLIKA PO OŠTEĆENJIMA
-# ============================================================
+
 from google.colab import drive
 import os
 import zipfile
@@ -16,7 +14,7 @@ import cv2
 from tqdm import tqdm
 from skimage.metrics import structural_similarity as ssim_metric
 
-# 1. MONTIRANJE I PUTANJE
+
 drive.mount('/content/drive')
 
 zip_path = '/content/drive/MyDrive/Projekat_Model/test.zip'
@@ -38,9 +36,7 @@ if not os.path.exists(local_extract_path):
     print("Dataset uspešno otpakovan.")
 
 
-# =====================================================================
-# 2. MODEL RESTAURACIJE (TAČNA TRENING ARHITEKTURA)
-# =====================================================================
+# arhitektura restauracije
 class DepthwiseSeparableConv2d(nn.Module):
     def __init__(self, in_ch: int, out_ch: int, kernel_size: int = 3, padding: int = 1, dilation: int = 1):
         super().__init__()
@@ -382,9 +378,7 @@ class Restauracija(nn.Module):
         return self.contrast_color_recovery(d1_fused, input_img)
 
 
-# ============================================================
-# 3. MAPIRANJE OŠTEĆENJA I POMOĆNE FUNKCIJE
-# ============================================================
+# ostecenja
 DAMAGE_MAP = {
     'apply_anisotropic_diffusion': 'Anisotropic Diffusion (Vlaga/Zamućenje)',
     'apply_mold_and_decay': 'Mold and Decay (Buđ/Organski raspad)',
@@ -410,9 +404,7 @@ def find_dataset_folders(base_path):
     return None, None
 
 
-# ============================================================
-# 4. GLAVNA EVALUACIONA PETLJA
-# ============================================================
+# glavni deo petlje
 def pokreni_evaluaciju():
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     print(f"Uređaj za evaluaciju: {device}")
@@ -422,33 +414,33 @@ def pokreni_evaluaciju():
     os.makedirs(pojedinacne_dir, exist_ok=True)
     os.makedirs(poredjenja_dir, exist_ok=True)
 
-    print(f"Učitavam model sa putanje: {model_path}")
+    print(f" model  {model_path}")
     model = Restauracija(base_ch=32).to(device)
 
     checkpoint = torch.load(model_path, map_location=device, weights_only=False)
     model.load_state_dict(checkpoint['model_state_dict'], strict=False)
     model.eval()
-    print("Model uspešno učitan!")
+    print("ucitan model")
 
     f0, f1 = find_dataset_folders(local_extract_path)
     if f0 is None or f1 is None:
-        raise FileNotFoundError("Nisu pronađeni '0' i '1' folderi u test dataset-u!")
+        raise FileNotFoundError("Nisu pronađeni '0' i '1' folderi u test dataset-u")
 
     dmg_files = sorted([f for f in os.listdir(f1) if f.lower().endswith(('.png', '.jpg', '.jpeg', '.bmp', '.tiff'))])
-    print(f"Pronađeno {len(dmg_files)} oštećenih slika za testiranje.")
+    print(f" {len(dmg_files)} oštećenih slika za testiranje.")
 
     results_list = []
     transform_to_tensor = transforms.ToTensor()
 
-    print("\nPokrećem restauraciju i analizu metrika...")
+    print("\nrestauracija i analiza")
 
-    for dmg_f in tqdm(dmg_files, desc="Evaluacija u toku"):
+    for dmg_f in tqdm(dmg_files, desc="Evaluacija"):
         parts = dmg_f.split('_')
         if len(parts) < 2:
             continue
         base_name = f"{parts[0]}_{parts[1]}"
 
-        # Tačna logika sparivanja slika (Ispravlja ogledalski bug)
+        # spajanje
         clean_name = f"{base_name}_flip.jpg" if "_flip_" in dmg_f else f"{base_name}_clean.jpg"
         clean_path = os.path.join(f0, clean_name)
 
@@ -503,7 +495,7 @@ def pokreni_evaluaciju():
             'MAE': mae_val
         })
 
-        # Sačuvaj samostalnu restaurisanu sliku u originalnoj veličini
+        # cuvanje samostalne slike u originalnoj velicini
         restored_original_size = restored_pil.resize(dmg_pil.size, Image.Resampling.BILINEAR)
         restored_original_size.save(os.path.join(pojedinacne_dir, f"restored_{dmg_f}"))
 
